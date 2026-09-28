@@ -307,12 +307,77 @@ REMAINING: F6 wires harvest_odds_band into the API using runner-owned extract+po
 
 ---
 
-## F5. Run registry + job runner
-WHAT   Track runs on disk so status polling and Stage 2/3 can find a run's pool.
-CHANGE results/runs/<run_id>/ holds the extract + status.json {state, provider, params,
-       tried, valid, qualifying, stop_reason, started_at, finished_at, error?}. Runner
-       writes status transitions; supports cancel (terminate the subprocess).
-DONE   GET /api/scan/<id> reflects live counts and a stop_reason; cancel ends the job.
+## F5. Run registry + job runner [PARTIAL 2026-09-28 v3 — review fixes completed; fresh-seed orchestration and live acceptance outstanding]
+WHAT   Durable lifecycle and exact artifact lookup for F6/F7, implemented in
+       portfolio/registry.py over portfolio/worker.py. No HTTP/UI implementation.
+LAYOUT results/runs/<provider>/<run_id>/ contains status.json, status.lock,
+       run.lock, diagnostic launch.pending, worker.exit.json, progress.json,
+       worker.log, codes/, extracts/.
+SCHEMA v1: run_id, provider, schema_version, state, request{seed, max_qualifying,
+       min_odds, max_odds, max_codes, depth}, started_at, finished_at, updated_at,
+       stop_reason, counters{tried, found_ok, qualifying, excluded_simulations,
+       unpriced}, error{code,message}, cancel_requested_at, cancel_granted_at,
+       supervisor{pid,exit_code}, worker{pid}, recovery_note,
+       extract{path,sha256,size,validated_at,policy{odds_basis,min_odds,max_odds}}.
+       Null counters mean unknown; found_ok is the scanner's valid counter.
+       request records requested overrides; committed extract records effective
+       scan settings and its translated odds policy. No environment secrets stored.
+WRITERS Registry owns status.json (atomic replacement, status.lock serializes
+       updates) and launch.pending. Worker owns progress/artifacts/logs; supervisor
+       owns worker.exit.json. Progress is merged into live reads, never allowed to
+       overwrite lifecycle state. Both scanners throttle atomic progress to 0.5s
+       and atomically publish the completed extract. Stop reasons are
+       qualifying_limit, try_budget, candidates_exhausted, cancelled, failure,
+       or unknown. Qualifying limits count retained coupons, not requests.
+STATES starting -> running -> succeeded|failed|cancelled|cancelled_unresolved|unknown;
+       definitive launch failure -> launch_failed; cancelled_unresolved -> cancelled
+       only after ownership ends. Other terminals are immutable.
+START  Registry holds run.lock BEFORE publishing starting and passes that SAME
+       descriptor into the supervisor, then into the worker. Host death before
+       acknowledgement, missing/stale sidecars, and expired diagnostic timestamps
+       cannot cause premature finalization. No PID/TTL-based launch-claim inference.
+       Provider job.lock still enforces single-flight across processes. Losing a
+       provider claim raises JobBusyError and removes only the new caller-owned run.
+       LaunchError(uncertain=True) stays observable rather than terminal launch_failed.
+       Invalid numeric arguments fail before allocating a run.
+RECOVER Probe the RUN's inherited lock, not a provider-wide lock or saved PID.
+       An unrelated run cannot keep an old record running. Once ownership ends,
+       use worker.exit.json {provider,run_id,worker_pid,exit_code,finished_at}; reject
+       evidence belonging to another run. A starting record may already have completed
+       work if its host died before recording the acknowledgement. With no trustworthy
+       completion evidence, report unknown; never infer success from file presence.
+COMMIT Require successful completion, exactly one final extracts/*.json, valid strict
+       JSON, matching provider, explicit parsed_leg_product basis, and a valid band.
+       Validate and hash ONE byte snapshot; record its digest, size, and exact path.
+       An empty valid extract is successful. committed_extract() uses only the saved
+       path and checks containment, existence, digest, and size on every retrieval;
+       replacement/truncation/mutation fails closed. The hash check applies at lookup;
+       callers must not treat arbitrary later filesystem mutation as an immutable file.
+CANCEL Persist request first. The owning finalizer consumes requests from ANY registry;
+       repeated requests do not spawn repeated escalation threads. Signal the spawned
+       supervisor, which terminates its own child; after grace, SIGUSR1 asks that same
+       supervisor to kill its direct child. No ps lookup or PID-based kill in registry.
+       If the supervisor/control channel is gone, remain cancelled_unresolved until
+       run ownership ends. Completion updates counters and clears unresolved errors.
+       Terminal cancellation is a no-op; cancellation during launch prevents startup
+       if observed before Popen, otherwise the owner consumes it after acknowledgement.
+VERIFICATION See tests/test_registry.py: original lifecycle coverage plus all five review
+       regressions, integrity mutations, malformed parameters, run-bound exit evidence,
+       and REAL host crashes before launch and after acknowledgement. The latter writes
+       a valid extract then exits 7; recovery must fail it. A deliberately old diagnostic
+       claim cannot override an active run.lock. Registry tests use fixture providers and
+       real subprocesses; full-suite results are recorded in the implementation handoff.
+LIMITS Fresh-seed booking orchestration is NOT implemented. The differing book_random
+       paths require a separately tested book -> seed -> scan flow under one provider
+       job. Scan-only cancellation targets the worker via its supervisor; full browser/
+       descendant cleanup for booking remains unimplemented. POSIX flock only. Atomic
+       replacement prevents torn reads but does not claim power-loss durability (fsync).
+       Saved PID liveness remains advisory in WorkerHost; inherited locks are authoritative.
+       F6 must wire routes/loopback, use harvest_odds_band and committed_extract; F7 owns
+       UI restore/polling. LIVE HTTP/full-provider acceptance remains outstanding.
+DONE   After F6: GET /api/scan/<id> shows live counts and stop_reason; cancellation ends
+       the job. Fresh-seed orchestration and live whole-slice acceptance remain gates;
+       do not mark the entire F5 item DONE from these offline tests alone.
 
 ## F6. API routes on serve.py
 WHAT   Add POST handlers; serve.py is GET-only today (serve.py:67).
