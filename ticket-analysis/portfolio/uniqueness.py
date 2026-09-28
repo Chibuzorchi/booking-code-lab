@@ -1,16 +1,21 @@
-"""Phase 1 — the uniqueness filter (leg-level).
+"""Phase 1 — the uniqueness filter (leg-level), on the shared eligible pool.
 
 Collapse a harvested pool of booking codes down to the codes that are genuinely
 distinct when you *open them and read the games*. Two codes are duplicates the
-moment they share a single game+option (selection_key); a code is distinct only
-when none of its legs appears in any other code.
+moment they share a single game+option; a code is distinct only when none of its
+legs appears in any other code.
 
-This is Firefly's *resource-level* comparison, not its whole-state hash. Firefly
-compares individual cloud resources across states by a composite key to see what
-actually overlaps (inventoryV3Service), rather than hashing the entire state as
-one blob (iaCStacksService). Here the "resource" is one leg (game+option) and its
-composite key is `selection_key`. We match legs across codes, not tickets as
-blobs — so a code sharing 15 of 20 legs is correctly seen as overlapping.
+Stage 2 (this module) and Stage 3 (exposure de-correlation) consume the SAME
+eligible pool from the SAME builder — decorrelation.build_pool — with the same
+explicit extract, provider, and odds policy (basis + band) and the same duplicate
+handling (conflicting observations of one code raise, not silently diverge). The
+leg identity is contracts.identity via normalize_ticket's legs[].key. So the two
+stages can never disagree about the pool or about whether two codes share a leg.
+
+Relationship to Stage 3's output: the fully-distinct set is exactly the eligible
+codes whose every leg is unique across the WHOLE eligible pool. On that same pool,
+with no target limit, distinct ⊆ selected at max_exposure=1; equality is possible.
+With a target limit, inclusion is not guaranteed.
 """
 from __future__ import annotations
 
@@ -19,68 +24,47 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from .analysis import label, read_json
+from .analysis import canonical, label
+from .decorrelation import build_pool
 
 
-def selection_key(selection: dict) -> str:
-    """Composite key of one leg: game + market + pick. Prefer the provider's own
-    selection_key, else compose it from the event/market/outcome ids."""
-    key = label(selection.get("selection_key"))
-    if key:
-        return key
-    parts = [str(selection.get(k)) for k in ("native_event_id", "market_id", "outcome_id")]
-    return "$".join(p for p in parts if p and p != "None")
+def leg_key_set(ticket: dict) -> set:
+    """The leg-identity keys of a normalized ticket (contracts.identity)."""
+    return {canonical(leg["key"]) for leg in ticket["legs"]}
 
 
-def event_key(selection: dict) -> str:
-    """Identity of the game itself, ignoring which market/pick was taken."""
-    return str(selection.get("native_event_id") or selection.get("event_id")
-               or label(selection.get("event")) or "")
+def _bare_code(ticket: dict) -> str:
+    """The booking code as pasted into the app (from the preserved raw coupon)."""
+    raw = ticket.get("raw") or {}
+    if raw.get("code"):
+        return label(raw["code"])
+    tid = ticket.get("id", "")
+    return tid.split(":", 1)[1] if ":" in tid else tid
 
 
-def load_coupons(paths):
-    """All qualifying coupons across the given extract files (order preserved)."""
-    coupons = []
-    for path in sorted(paths):
-        try:
-            data = read_json(path)
-        except (ValueError, OSError):
-            continue
-        if not isinstance(data, dict) or not isinstance(data.get("qualifying"), list):
-            continue
-        for raw in data["qualifying"]:
-            if isinstance(raw, dict) and isinstance(raw.get("selections"), list) and raw.get("code"):
-                coupons.append(raw)
-    return coupons
+def analyze(tickets):
+    """Phase-1 report at the leg level over a shared eligible pool.
 
-
-def leg_usage(coupons):
-    """Counter: how many codes each leg (game+option) appears in."""
+    tickets: normalized tickets from build_pool (each carries legs[].key and raw).
+    """
     use = Counter()
-    for c in coupons:
-        for lk in {selection_key(s) for s in c["selections"]}:
+    for t in tickets:
+        for lk in leg_key_set(t):
             use[lk] += 1
-    return use
 
+    distinct, overlapping = [], []        # distinct: every leg unique across the pool
+    for t in tickets:
+        legs = leg_key_set(t)
+        (distinct if all(use[lk] == 1 for lk in legs) else overlapping).append(t)
 
-def analyze(coupons):
-    """Phase-1 report at the leg level: which codes are genuinely distinct."""
-    use = leg_usage(coupons)
-    distinct = []          # codes whose every leg is unique to them
-    overlapping = []       # codes that share >=1 leg with another code
-    for c in coupons:
-        legs = {selection_key(s) for s in c["selections"]}
-        (distinct if all(use[lk] == 1 for lk in legs) else overlapping).append(c)
-
-    # readable names + which game+option is reused the most
     name = {}
-    for c in coupons:
-        for s in c["selections"]:
-            name.setdefault(selection_key(s),
-                            f"{label(s.get('event'))} :: {label(s.get('market'))} = {label(s.get('pick'))}")
+    for t in tickets:
+        for leg in t["legs"]:
+            name.setdefault(canonical(leg["key"]),
+                            f"{label(leg.get('event'))} :: {label(leg.get('market'))} = {label(leg.get('pick'))}")
 
     return {
-        "coupons": len(coupons),
+        "coupons": len(tickets),
         "distinct_legs": len(use),
         "shared_legs": sum(1 for v in use.values() if v > 1),
         "distinct_codes": len(distinct),
@@ -91,38 +75,57 @@ def analyze(coupons):
     }
 
 
+def analyze_extract(extract_path, provider, *, odds_basis, min_odds, max_odds=None):
+    """Stage-2 report for one run's extract, on the shared eligible pool.
+
+    Uses decorrelation.build_pool so the pool (provider match, odds band, duplicate
+    handling) is byte-for-byte what Stage 3 selects from. Returns the pool metadata
+    (input_count, pool_size, excluded, policy) merged with the distinctness report.
+    """
+    pool = build_pool(extract_path, provider, odds_basis=odds_basis,
+                      min_odds=min_odds, max_odds=max_odds)
+    report = analyze(pool["tickets"])
+    return {"extract_path": pool["extract_path"], "provider": pool["provider"],
+            "odds_basis": pool["odds_basis"], "min_odds": pool["min_odds"],
+            "max_odds": pool["max_odds"], "input_count": pool["input_count"],
+            "pool_size": pool["pool_size"], "excluded": pool["excluded"], **report}
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Phase 1: leg-level distinctiveness of harvested codes")
-    ap.add_argument("--results", required=True, help="provider results dir (reads extracts/*.json)")
-    ap.add_argument("--out", default=None, help="write the fully-distinct codes here (default: results/distinct_tickets.json)")
+    ap = argparse.ArgumentParser(description="Phase 1: leg-level distinctiveness on the shared eligible pool")
+    ap.add_argument("--extract", required=True, help="one run's extract JSON (results/runs/<id>/extracts/*.json)")
+    ap.add_argument("--provider", required=True, choices=["bet9ja", "sportybet"])
+    ap.add_argument("--odds-basis", required=True,
+                    choices=["parsed_leg_product", "site_displayed_odds", "verified_payout"])
+    ap.add_argument("--min-odds", type=float, required=True, help="lower band (>= 1)")
+    ap.add_argument("--max-odds", type=float, default=None, help="upper band (optional)")
+    ap.add_argument("--out", default=None, help="write the fully-distinct codes here")
     args = ap.parse_args()
 
-    results = Path(args.results).resolve()
-    paths = sorted((results / "extracts").glob("*.json"))
-    if not paths:
-        print(f"No extracts found under {results}/extracts")
-        return 1
-    r = analyze(load_coupons(paths))
+    r = analyze_extract(args.extract, args.provider, odds_basis=args.odds_basis,
+                        min_odds=args.min_odds, max_odds=args.max_odds)
     total, distinct = r["coupons"], r["distinct_codes"]
 
-    print("PHASE 1 — UNIQUENESS (leg-level: game+option)")
+    print("PHASE 1 — UNIQUENESS (leg-level: game+option, shared eligible pool)")
     print("=" * 46)
-    print(f"codes in pool                 : {total}")
+    print(f"input coupons in extract      : {r['input_count']}")
+    print(f"eligible pool (band+provider) : {total}  (excluded {len(r['excluded'])})")
     print(f"distinct legs (game+option)   : {r['distinct_legs']}")
     print(f"legs shared by >1 code        : {r['shared_legs']}")
     print(f"codes fully distinct (0 shared): {distinct}")
-    print(f"codes overlapping (>=1 shared) : {r['overlapping_codes']} "
-          f"({100 * r['overlapping_codes'] / total:.0f}%)")
+    if total:
+        print(f"codes overlapping (>=1 shared) : {r['overlapping_codes']} "
+              f"({100 * r['overlapping_codes'] / total:.0f}%)")
     print()
     print("most-reused single game+option (leg -> # codes using it):")
     for g in r["top_legs"]:
         print(f"   {g['in_codes']:>4}  {g['leg']}")
 
-    out = Path(args.out) if args.out else results / "distinct_tickets.json"
-    payload = {"distinct_code_count": distinct,
-               "codes": [label(c.get("code")) for c in r["distinct"]]}
-    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(f"\nWrote {distinct} fully-distinct codes -> {out}")
+    if args.out:
+        payload = {"distinct_code_count": distinct,
+                   "codes": [_bare_code(t) for t in r["distinct"]]}
+        Path(args.out).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"\nWrote {distinct} fully-distinct codes -> {args.out}")
     return 0
 
 

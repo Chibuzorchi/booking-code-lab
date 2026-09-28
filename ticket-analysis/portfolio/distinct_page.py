@@ -10,7 +10,8 @@ import argparse
 import html
 from pathlib import Path
 
-from .uniqueness import analyze, load_coupons
+from .contracts import odds_value
+from .uniqueness import _bare_code, analyze_extract
 
 PROVIDER_LABEL = {"bet9ja": "bet9ja", "sportybet": "sportybet"}
 
@@ -20,28 +21,37 @@ def _esc(x) -> str:
 
 
 def render_html(provider: str, report: dict) -> str:
-    distinct = sorted(report["distinct"], key=lambda c: c.get("parsed_leg_product") or 0)
+    basis = report["odds_basis"]
+    basis_label = {"parsed_leg_product": "Parsed leg product",
+                   "site_displayed_odds": "Site displayed odds",
+                   "verified_payout": "Verified payout"}[basis]
+    def sort_key(ticket):
+        value = odds_value(ticket, basis)
+        return (value is None, value if value is not None else 0)
+    distinct = sorted(report["distinct"], key=sort_key)
     label = PROVIDER_LABEL.get(provider, provider)
     cards = []
     for c in distinct:
-        odds = c.get("parsed_leg_product") or c.get("total_odds")
-        code = _esc(c.get("code"))
+        odds = odds_value(c, basis)
+        code = _esc(_bare_code(c))
         legs = "".join(
             f"<tr><td>{_esc(s.get('event'))}<small>{_esc(s.get('league'))} · {_esc(s.get('kickoff'))}</small></td>"
             f"<td>{_esc(s.get('market'))}</td><td>{_esc(s.get('pick'))}</td>"
             f"<td class='n'>{_esc(round(s['odds'],2) if s.get('odds') else '—')}</td></tr>"
-            for s in c["selections"])
+            for s in c["legs"])
         cards.append(
             f"""<details class="ticket"><summary>
       <span><small>Booking code</small><strong>{code}</strong></span>
       <span><small>Legs</small><span class="n">{_esc(c.get('num_legs'))}</span></span>
-      <span><small>Odds</small><span class="n">{_esc(f'{odds:,.2f}' if odds else '—')}</span></span>
+      <span><small>{basis_label}</small><span class="n">{_esc(f'{odds:,.2f}' if odds is not None else '—')}</span></span>
       <button class="copy" type="button" data-code="{code}" onclick="cp(this,event)">Copy</button>
       <span class="chev">›</span></summary>
       <div class="detail"><table><thead><tr><th>Match / league</th><th>Market</th><th>Pick</th><th>Odds</th></tr></thead>
       <tbody>{legs}</tbody></table></div></details>""")
-    allcodes = "\n".join(_esc(c.get("code")) for c in distinct)
+    allcodes = "\n".join(_esc(_bare_code(c)) for c in distinct)
     n = len(distinct)
+    lo, hi = report.get("min_odds"), report.get("max_odds")
+    band = f" ({basis_label}: {lo:g}{chr(8211) + format(hi, 'g') if hi is not None else '+'})" if lo is not None else ""
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Distinct codes · {label}</title>
 <style>
@@ -66,7 +76,7 @@ th,td{{padding:11px 9px;border-bottom:1px solid #e7ece4;vertical-align:top}} td 
 @media(max-width:640px){{.ticket summary{{grid-template-columns:1fr 84px;gap:10px}}.chev{{display:none}}}}
 </style></head><body>
 <header><div class="eyebrow">Phase 1 · {label}</div><h1>{n} fully distinct codes</h1>
-<p>Out of {report['coupons']} harvested codes (odds 5,000–350,000), these {n} share <b>zero</b> games+options with any other code. The other {report['overlapping_codes']} overlap and are held for de-correlation.</p>
+<p>Out of {report['coupons']} eligible codes{band}, these {n} share <b>zero</b> games+options with any other code. The other {report['overlapping_codes']} overlap and are held for de-correlation.</p>
 <div class="bar"><button class="allbtn" type="button" onclick="cpAll(this)">Copy all {n} codes</button></div></header>
 <main>{''.join(cards)}</main>
 <textarea id="all" style="position:absolute;left:-9999px" aria-hidden="true">{allcodes}</textarea>
@@ -81,12 +91,16 @@ async function cpAll(b){{const a=document.getElementById('all');let ok=await wri
 def main() -> int:
     ap = argparse.ArgumentParser(description="Render phase-1 distinct codes to an HTML page")
     ap.add_argument("--provider", required=True, choices=list(PROVIDER_LABEL))
-    ap.add_argument("--results", required=True)
-    ap.add_argument("--out", default=None, help="default: <results>/distinct.html")
+    ap.add_argument("--extract", required=True, help="one run's extract JSON")
+    ap.add_argument("--odds-basis", required=True,
+                    choices=["parsed_leg_product", "site_displayed_odds", "verified_payout"])
+    ap.add_argument("--min-odds", type=float, required=True)
+    ap.add_argument("--max-odds", type=float, default=None)
+    ap.add_argument("--out", default=None, help="default: <extract dir>/distinct.html")
     args = ap.parse_args()
-    results = Path(args.results).resolve()
-    report = analyze(load_coupons(sorted((results / "extracts").glob("*.json"))))
-    out = Path(args.out) if args.out else results / "distinct.html"
+    report = analyze_extract(args.extract, args.provider, odds_basis=args.odds_basis,
+                             min_odds=args.min_odds, max_odds=args.max_odds)
+    out = Path(args.out) if args.out else Path(args.extract).resolve().parent / "distinct.html"
     out.write_text(render_html(args.provider, report), encoding="utf-8")
     print(f"{report['distinct_codes']} distinct {args.provider} codes -> {out}")
     return 0
