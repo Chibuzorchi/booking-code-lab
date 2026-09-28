@@ -121,19 +121,112 @@ STATUS Done (v2 — first pass FAILED review: Stage 2 had its own ingestion that
        page displays, labels, and sorts by that basis without fallback. Regression
        coverage includes equal sets, target truncation, and odds display/CLI policy.
 
-## F3. Provider isolation via worker processes  [BLOCKER]
+## F3. Provider isolation via worker processes  [BLOCKER]  [PARTIAL 2026-09-28 v4 — worker foundation implemented, verified offline (2nd + 3rd review findings fixed, F5 contract split); live dual-provider scan acceptance pending F5]
 WHAT   Both engines mutate process-global state, so two providers cannot share one
        interpreter: env.py load_dotenv(override=False) means the 2nd provider inherits
        the 1st's env; each scan_code does sys.path.insert(0, provider_root).
 WHERE  bet9ja/engine/env.py:14-22 + sportybet/engine/env.py:14-22; scan_code.py:13-18.
 CHANGE - Job runner launches each scan/booking as a SUBPROCESS: cwd = Sport/<provider>,
-         argv = [python, -m, scripts.scan_code, seed, --scan, ...flags]. Never import a
-         provider's engine into the server process.
+          argv = [python, -m, scripts.scan_code, seed, --scan, ...flags]. Never import a
+          provider's engine into the server process.
        - Single-flight: at most ONE active job per provider (a per-provider lock).
        - Separate run registries/dirs per provider; on provider switch in the UI,
          restore that provider's run state.
-DONE   Run bet9ja then sportybet back-to-back through the runner; the sportybet extract
-       shows base36 codes and sportybet's own band (proves no env/path bleed).
+DONE   (LIVE acceptance, still pending F5 wiring): run bet9ja then sportybet back-to-back
+       through the runner; the sportybet extract shows base36 codes and sportybet's own
+       band (proves no env/path bleed). Not claimed yet — no provider traffic was used.
+STATUS Implemented portfolio/worker.py (reviewed once; five findings fixed — see
+       VERIFIED). WorkerHost.start_scan(provider, seed, *, max_qualifying=0, min_odds,
+       max_odds, max_codes, depth, env_extra, run_dir) launches an ARGUMENT LIST
+       (never a shell): [sys.executable, -m, scripts.scan_code, seed, --scan,
+       --max-qualifying N, --run-dir <abs run dir>, ...] with cwd = <workspace>/<provider>
+       and the server's own interpreter (worker.py:322-432; argv builder
+       worker.py:135-153). Reuses the reviewed F0 flags with their verified semantics:
+       --max-qualifying -> settings.max_qualifying (0 = uncapped, negatives rejected at
+       the CLI) and --run-dir -> settings.results_dir (fresh-dir guard stays TOCTOU, see
+       F0). Run dirs are ABSOLUTE: supplied relative paths are resolved against the
+       host cwd before allocation/owner metadata/argv, so the extract can never land
+       relative to the provider cwd; only a dir this call successfully created is ever
+       removed by it — collision candidates and pre-existing runs are never touched
+       (worker.py:327-351). ENV ISOLATION is explicit, not just cwd: isolated_env()
+       strips a STATIC provider-config inventory (every key read by provider
+       settings/env code, incl. LOCALE/TIMEZONE_ID/REQUEST_TIMEOUT_S absent from both
+       dotenv files) PLUS every key any provider .env/.env.* defines PLUS
+       PYTHONPATH/PYTHONHOME/BET_ENV, so the child's own load_dotenv(override=False)
+       repopulates from ITS .env; env_extra wins (worker.py:47-133). The server process
+       never imports engine/infra (asserted by tests). SINGLE-FLIGHT: per-provider flock
+       on results/runs/<provider>/job.lock, opened by a tiny SUPERVISOR process and
+       INHERITED BY THE WORKER, which retains the descriptor for its whole lifetime
+       (worker.py:159-277): the lock is released only when every reference closes, i.e.
+       when the worker exits — on either platform's flock semantics. Host death at ANY
+       point (including mid-startup) cannot release the lock while the worker lives: a
+       closed report pipe is treated as a host disconnect, and the supervisor keeps
+       waiting on the worker instead of unwinding (worker.py:239-247). A supervisor
+       killed while its worker lives leaves the lock held by that worker: replacement
+       starts fail closed (JobBusyError) until it exits. NO recovery path ever signals a
+       process identified only by a saved PID — there is no PID-based orphan reaping, so
+       PID reuse cannot terminate unrelated processes. The supervisor writes
+       job.owner.json {provider, run_id, pid, worker_pid, started_at}, reports
+       ok/busy/error over a pipe (all report writes tolerate BrokenPipeError), and
+       UNLINKS the sidecar before closing its descriptor — a stale owner can never
+       delete a new owner's sidecar, and sidecar write failure terminates+reaps the
+       worker (bounded) and surfaces as LaunchError. STARTUP FAILURE IS BOUNDED: on a
+       missing report the parent reaps the supervisor with bounded SIGTERM->SIGKILL
+       escalation (worker.py:449-477), then probes the flock itself (PID-free) to decide
+       whether a live worker still owns the run dir — the dir is only deleted when no
+       worker can be using it, otherwise LaunchError reports retained ownership
+       (worker.py:433-439). SUPERVISOR EXIT vs WORKER COMPLETION are distinct in the
+       F5-facing contract (worker.py:274-326): ScanJob.poll/wait/exit_code observe the
+       SUPERVISOR (whose rc proxies the worker's on the normal path), while
+       worker_alive() (advisory liveness of the live-reported worker pid — never
+       signalled), worker_settled (worker confirmed gone), is_running()
+       (supervisor OR worker alive), and WorkerHost.lock_held(provider) (authoritative,
+       PID-free flock probe) observe WORKER completion. collect() waits for the
+       supervisor and settles the worker only when it is already gone; the reaper keeps
+       an orphaned-worker job registered (active_job stays non-None, lock_held stays
+       True) until the worker exits. terminate() forwards through the supervisor and is
+       a documented no-op once the supervisor is gone (escalation is F5 cancel
+       semantics). A daemon reaper settles the job the moment the worker exits — success
+       or failure — even if the caller never collects (worker.py:540-566); launch
+       failure (Popen OSError) removes the owned run dir. Runs live under
+       results/runs/<provider>/run-<provider>-.../ (extract via --run-dir, worker.log
+       captures stdout/stderr). FRESH-SEED SEQUENCES DIFFER and stay unwired (inspected):
+       bet9ja book_random books ONE seed (Chrome channel) and can --scan in-process but
+       takes NO --run-dir/--max-qualifying; sportybet book_random books N seeds with NO
+       scan step — booking launch construction is F5 work.
+VERIFIED OFFLINE (tests/test_worker.py, 21 tests / 2 subtests; full suite from
+       ticket-analysis/: `python3 -m pytest tests -q -p no:cacheprovider` -> 111 passed,
+       21 subtests passed). Fixture providers mirror the real scan_code CLI +
+       load_dotenv(override=False); every test crosses real subprocess boundaries, no
+       provider traffic, Popen is not mocked; timing is synchronized via a started.marker
+       worker-ready handshake (no fixed sleeps): (1) bet9ja->sportybet->bet9ja
+       back-to-back with a tainted parent env incl. settings absent from dotenv — each
+       extract shows its own provider/charset/band/URLs, no bleed in either direction;
+       (2) concurrent starts: sequential AND simultaneous (thread barrier, and two
+       processes launched together), same process AND across processes: exactly one
+       accepted; (3) providers run independently; (4) launch failure, nonzero exit, and
+       reaper path all settle ownership; HOLDER death (SIGKILL) keeps the lock held
+       until the worker exits; (5) HOST DEATH BEFORE THE ACK: report-pipe closed ->
+       supervisor stays alive, sidecar published, worker alive, lock held
+       (JobBusyError); ownership ends only with the worker (sidecar removed, lock free,
+       extract written); (6) SUPERVISOR DEATH BEFORE SIDECAR PUBLICATION (marker
+       handshake, then kill): worker keeps the lock (no sidecar needed), replacement is
+       refused until the worker exits — fail closed, no PID signalling; (7) CONTRACT
+       SPLIT: supervisor killed while its worker lives -> supervisor exited but job
+       still running, active_job non-None, lock_held True, worker_settled False; worker
+       exit settles everything; (8) separate per-provider run dirs with correct
+       attribution; (9) run-id collision exhaustion never deletes an existing run;
+       (10) relative run_dir resolves before launch (log and extract co-located);
+       (11) sidecar write failure releases the lock. Real provider entrypoints
+       (`python -m scripts.scan_code --help`) launch offline under the isolated env and
+       expose --max-qualifying/--run-dir.
+KNOWN LIMITS: a worker orphaned by a SIGKILLed supervisor keeps the lock and blocks new
+       starts until it exits (by design: fail closed; F5 provides explicit cancel/
+       recovery). flock/supervisor design is POSIX (darwin/linux). Full durable status/
+       cancellation semantics stay with F5.
+REMAINING (tracked under F5/F6/F7, not F3): durable status.json transitions +
+       cancellation semantics, API routes, UI provider-switch run-state restore, and the
+       live dual-provider extract acceptance above.
 
 ## F4. Single odds basis end to end  [HIGH]
 WHAT   "odds" means different things per stage: sportybet scanner qualifies on total_odds
