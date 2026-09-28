@@ -163,3 +163,5 @@ Each results folder gets an `index.html`, a `START_HERE.txt` listing scans, a `l
 Provider scanner saves automatically invoke this renderer. The browser shows
 captured candidates and keeps site odds separate from calculated leg products;
 it does not replace portfolio analysis or verify settlement.
+
+Local scan/analysis API: see [F6 API contract and examples](docs/F6_API.md).

@@ -41,12 +41,14 @@ def harvest_odds_band(extract):
             "max_odds": None if upper is None or upper <= 0 else upper}
 
 
-def build_pool(extract_path, provider, *, odds_basis, min_odds, max_odds=None):
+def build_pool(extract_path, provider, *, odds_basis, min_odds, max_odds=None, data=None):
     """Return normalized candidates and exclusions; never discover other files.
 
     The caller supplies the run's provider and odds policy. Missing prices on the
     chosen basis are excluded, without falling back to another odds quantity.
     Conflicting observations of one code fail explicitly, regardless of order.
+    Optional parsed data comes from the registry integrity-checked snapshot; when supplied,
+    the path is provenance only and is never reopened.
     """
     if provider not in ("bet9ja", "sportybet"):
         raise ParamError("unsupported provider")
@@ -60,7 +62,7 @@ def build_pool(extract_path, provider, *, odds_basis, min_odds, max_odds=None):
         raise ParamError("max_odds must be finite and >= min_odds, or None")
     path = Path(extract_path)
     try:
-        data = read_json(path)
+        data = read_json(path) if data is None else data
     except (OSError, ValueError) as exc:
         raise ExtractError("cannot read run extract") from exc
     if not isinstance(data, dict) or not isinstance(data.get("qualifying"), list):
@@ -104,7 +106,7 @@ def build_pool(extract_path, provider, *, odds_basis, min_odds, max_odds=None):
 
 
 def decorrelate_extract(extract_path, provider, params=None, *, odds_basis,
-                        min_odds, max_odds=None):
+                        min_odds, max_odds=None, data=None):
     """Validate parameters, normalize the full eligible pool, then select.
 
     HTTP routing and resolving a run ID to its committed extract belong to the
@@ -112,6 +114,6 @@ def decorrelate_extract(extract_path, provider, params=None, *, odds_basis,
     """
     parsed = parse_decorrelate_params(params)
     pool = build_pool(extract_path, provider, odds_basis=odds_basis,
-                      min_odds=min_odds, max_odds=max_odds)
+                      min_odds=min_odds, max_odds=max_odds, data=data)
     tickets = pool.pop("tickets")
     return {**pool, "selection": select_subset(tickets, **parsed)}

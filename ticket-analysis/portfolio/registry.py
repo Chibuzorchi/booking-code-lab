@@ -362,6 +362,10 @@ class RunRegistry:
         """The ONE extract registered for a successful run; never discovered
         by globbing, and re-verified against the committed digest and size so
         a replaced or mutated artifact is refused."""
+        return self.committed_extract_snapshot(run_id)[0]
+
+    def committed_extract_snapshot(self, run_id: str) -> tuple[Path, bytes]:
+        """Return the exact verified bytes, avoiding a check-then-reopen race."""
         status = self.get(run_id)
         extract = status.get("extract") or {}
         path = extract.get("path")
@@ -380,7 +384,7 @@ class RunRegistry:
                 or len(raw) != extract.get("size"):
             raise RunStateError(
                 f"run {run_id}: committed extract changed after commitment")
-        return candidate
+        return candidate, raw
 
     # ----------------------------------------------------------------- cancel
 

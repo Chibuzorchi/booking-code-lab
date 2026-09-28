@@ -379,12 +379,21 @@ DONE   After F6: GET /api/scan/<id> shows live counts and stop_reason; cancellat
        the job. Fresh-seed orchestration and live whole-slice acceptance remain gates;
        do not mark the entire F5 item DONE from these offline tests alone.
 
-## F6. API routes on serve.py
+## F6. API routes on serve.py [IMPLEMENTED — offline HTTP verification; live acceptance pending]
 WHAT   Add POST handlers; serve.py is GET-only today (serve.py:67).
 CHANGE POST /api/scan, GET /api/scan/<id>, POST /api/distinct, POST /api/decorrelate,
        GET /api/runs. Enforce loopback (or auth) since these trigger scans/bookings —
        do NOT rely on the 127.0.0.1 default alone (--host is configurable, serve.py:103).
 DONE   Each route works; a non-loopback request to a mutating route is refused.
+STATUS Added all five routes plus POST /api/scan/<id>/cancel. Loopback binding,
+       peer/Host/Origin checks on every report/static/API request, bounded strict JSON
+       requests, normalized origin authorities, and structured API errors (including
+       unexpected failures and unsupported methods).
+       Stage 2/3 parse the exact verified snapshot once and use harvest_odds_band;
+       Stage 3 validates parameters before registry access and keeps the full pool.
+       Existing report remains available. See F6_API.md for the HTTP contract.
+       Explicit seed required; fresh_seed=true returns 501. Booking orchestration,
+       live provider acceptance, and F7 browser work remain outstanding.
 
 ## F7. Shared copy() helper + 3-stage page
 WHAT   Copy JS is duplicated (reporting.html, distinct_page.py) and distinct_page's
@@ -399,6 +408,7 @@ DONE   Per-code copy works with the fallback path; one helper, no duplication.
 ## Acceptance gate for the whole slice
 1. bet9ja + sportybet each: scan (band, uncapped+budget) -> distinct -> decorrelate,
    all from the browser, each provider in its own process.
-2. Stage 2 distinct count == Stage 3 zero-shared count on the same run (F2b).
+2. With no target limit, Stage 2 fully-distinct codes are a subset of Stage 3
+   cap-1 selected codes on the same eligible pool (F2b); counts need not be equal.
 3. max_exposure=0 is impossible to send; the pool fed to Stage 3 is the full run pool.
 4. Every odds figure is one basis, labelled "recorded, not verified payout".
