@@ -35,9 +35,14 @@ class ScanResult:
     excluded_simulations: int = 0
     qualifying: list[Coupon] = field(default_factory=list)
     effective_min_odds: float | None = None
+    # Canonical eligibility basis end to end: the product of the recorded
+    # leg prices. Site-displayed odds never gate qualification; they are
+    # preserved separately in the export for reference.
+    odds_basis: str = "parsed_leg_product"
+    unpriced: int = 0
 
     def best(self) -> Coupon | None:
-        return max(self.qualifying, key=lambda c: c.total_odds, default=None)
+        return max(self.qualifying, key=lambda c: c.parsed_leg_product, default=None)
 
 
 class CouponScanner:
@@ -55,7 +60,8 @@ class CouponScanner:
         if seed_coupon.ok:
             seen_fingerprints.add(seed_coupon.fingerprint)
             self.logger.info(
-                f"Seed {seed}: {seed_coupon.num_legs} legs, total odds {seed_coupon.total_odds}"
+                f"Seed {seed}: {seed_coupon.num_legs} legs, "
+                f"leg-product odds {seed_coupon.parsed_leg_product}"
             )
 
         candidates = mutate(seed, self.settings.max_mutation_depth, self.settings.charset)
@@ -106,7 +112,14 @@ class CouponScanner:
                 if coupon.fingerprint in seen_fingerprints:
                     continue
                 seen_fingerprints.add(coupon.fingerprint)
-                odds, legs = coupon.total_odds, coupon.num_legs
+                odds = coupon.parsed_leg_product
+                legs = coupon.num_legs
+                if odds is None:
+                    result.unpriced += 1
+                    self.logger.info(
+                        f"Skipping {coupon.code}: no finite leg-product odds "
+                        "(missing/malformed leg prices or product overflow)")
+                    continue
                 max_odds = getattr(self.settings, "max_total_odds", 0.0)
                 min_legs = getattr(self.settings, "min_legs", 0)
                 max_legs = getattr(self.settings, "max_legs", 0)
@@ -116,7 +129,8 @@ class CouponScanner:
                         and (max_legs <= 0 or legs <= max_legs)):
                     result.qualifying.append(coupon)
                     self.logger.success(
-                        f"HIT {coupon.code}: {coupon.num_legs} legs @ total {coupon.total_odds}"
+                        f"HIT {coupon.code}: {coupon.num_legs} legs @ "
+                        f"leg-product {coupon.parsed_leg_product}"
                     )
                     if self.settings.max_qualifying and len(result.qualifying) >= self.settings.max_qualifying:
                         exhausted = True
@@ -139,14 +153,14 @@ class CouponScanner:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:12]
         eligible = [c for c in result.qualifying if not coupon_simulation_reason(c)]
         excluded_at_save = len(result.qualifying) - len(eligible)
-        ranked = sorted(eligible, key=lambda c: c.total_odds, reverse=True)
+        ranked = sorted(eligible, key=lambda c: c.parsed_leg_product, reverse=True)
         top = getattr(self.settings, "top_n", 0)
         if top and top > 0:
             ranked = ranked[:top]
 
         codes_path = codes_dir / f"scan_{result.seed}_{stamp}.txt"
         with codes_path.open("x", encoding="utf-8") as stream:
-            stream.write("".join(f"{c.code} │ {c.num_legs} │ {c.computed_odds:,.2f}\n" for c in ranked))
+            stream.write("".join(f"{c.code} │ {c.num_legs} │ {c.parsed_leg_product:,.2f}\n" for c in ranked))
 
         extract_path = extracts_dir / f"scan_{result.seed}_{stamp}.json"
         with extract_path.open("x", encoding="utf-8") as stream:
@@ -156,7 +170,9 @@ class CouponScanner:
             "tried": result.tried,
             "found_ok": result.found_ok,
             "excluded_simulations": result.excluded_simulations + excluded_at_save,
+            "unpriced_excluded": result.unpriced,
             "simulation_filter": "Z. / SRL / simulated / simulation / virtual labels",
+            "odds_basis": result.odds_basis,
             "saved_at": datetime.now(timezone.utc).isoformat(),
             "min_total_odds": result.effective_min_odds if result.effective_min_odds is not None else self.settings.min_total_odds,
             "max_total_odds": self.settings.max_total_odds,
@@ -168,7 +184,7 @@ class CouponScanner:
             "max_mutation_depth": self.settings.max_mutation_depth,
             "request_workers": self.settings.request_workers,
             "qualifying": [c.as_dict() for c in sorted(eligible, key=lambda c: c.code)],
-        }, stream, indent=2)
+        }, stream, indent=2, allow_nan=False)
 
         self.logger.info(
             f"Saved {len(ranked)} code(s) -> {codes_path}  |  full extract -> {extract_path}"

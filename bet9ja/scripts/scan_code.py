@@ -7,6 +7,7 @@ Usage:
   python -m scripts.scan_code 5S2HFVg --scan --min-odds 20 --env prod
 """
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -42,6 +43,8 @@ def main() -> int:
     if not code:
         parser.error("no booking code given: pass one as an argument or set SEED_CODE in .env")
     if args.min_odds is not None:
+        if not math.isfinite(args.min_odds):
+            parser.error("--min-odds must be finite")
         settings.min_total_odds = args.min_odds
     if args.depth is not None:
         settings.max_mutation_depth = args.depth
@@ -50,6 +53,8 @@ def main() -> int:
     if args.top is not None:
         settings.top_n = args.top
     if args.max_odds_cap is not None:
+        if not math.isfinite(args.max_odds_cap):
+            parser.error("--max-odds-cap must be finite")
         settings.max_total_odds = args.max_odds_cap
     if args.min_legs is not None:
         settings.min_legs = args.min_legs
@@ -82,13 +87,14 @@ def main() -> int:
     result = scanner.scan(code)
     scanner.save(result)
 
-    ranked = sorted(result.qualifying, key=lambda x: x.total_odds, reverse=True)
+    ranked = sorted(result.qualifying, key=lambda x: x.parsed_leg_product, reverse=True)
     if settings.top_n and settings.top_n > 0:
         ranked = ranked[:settings.top_n]
     shown = f"top {len(ranked)}" if settings.top_n else f"{len(ranked)}"
-    print(f"\n=== {shown} coupon(s) with total odds >= {settings.min_total_odds}  (code | odds | legs) ===")
+    print(f"\n=== {shown} coupon(s) with recorded leg-product odds >= {settings.min_total_odds}  (code | odds | legs) ===")
+    print("     odds = recorded leg-product odds (product of leg prices), NOT verified payout")
     for c in ranked:
-        print(f"  {c.code} | {c.total_odds:,.2f} | {c.num_legs}")
+        print(f"  {c.code} | {c.parsed_leg_product:,.2f} | {c.num_legs}")
     return 0
 
 

@@ -10,6 +10,37 @@ class ExtractError(ValueError):
     """The selected extract cannot be used as a trustworthy candidate source."""
 
 
+def harvest_odds_band(extract):
+    """Translate a scan extract's recorded odds policy into the Stage-2/3 band.
+
+    The scanner's canonical basis is parsed_leg_product (scanner exports
+    ``odds_basis`` since F4). The scanner's "no maximum" sentinel
+    (max_total_odds <= 0, or not recorded) maps to max_odds=None here, so the
+    harvest and the analysis stages share one band definition. Extracts
+    without an explicit parsed_leg_product basis, or with a malformed /
+    non-finite maximum, are rejected rather than assumed uncapped.
+    """
+    if not isinstance(extract, dict):
+        raise ExtractError("extract must be an object")
+    if extract.get("odds_basis") != "parsed_leg_product":
+        raise ExtractError("extract carries no parsed_leg_product odds basis "
+                           "(older or foreign scan)")
+    lower = number(extract.get("min_total_odds"))
+    if lower is None or lower < 1:
+        raise ExtractError("extract min_total_odds is missing or invalid")
+    raw_max = extract.get("max_total_odds")
+    if raw_max in (None, ""):
+        upper = None  # not recorded: scanner default (0 = no ceiling)
+    else:
+        upper = number(raw_max)
+        if upper is None:
+            raise ExtractError("extract max_total_odds is malformed or non-finite")
+        if upper > 0 and upper < lower:
+            raise ExtractError("extract max_total_odds is below min_total_odds")
+    return {"odds_basis": "parsed_leg_product", "min_odds": lower,
+            "max_odds": None if upper is None or upper <= 0 else upper}
+
+
 def build_pool(extract_path, provider, *, odds_basis, min_odds, max_odds=None):
     """Return normalized candidates and exclusions; never discover other files.
 
