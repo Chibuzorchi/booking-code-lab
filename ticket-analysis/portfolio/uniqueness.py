@@ -75,7 +75,7 @@ def analyze(tickets):
     }
 
 
-def analyze_extract(extract_path, provider, *, odds_basis, min_odds, max_odds=None):
+def analyze_extract(extract_path, provider, *, odds_basis, min_odds, max_odds=None, data=None):
     """Stage-2 report for one run's extract, on the shared eligible pool.
 
     Uses decorrelation.build_pool so the pool (provider match, odds band, duplicate
@@ -83,7 +83,7 @@ def analyze_extract(extract_path, provider, *, odds_basis, min_odds, max_odds=No
     (input_count, pool_size, excluded, policy) merged with the distinctness report.
     """
     pool = build_pool(extract_path, provider, odds_basis=odds_basis,
-                      min_odds=min_odds, max_odds=max_odds)
+                      min_odds=min_odds, max_odds=max_odds, data=data)
     report = analyze(pool["tickets"])
     return {"extract_path": pool["extract_path"], "provider": pool["provider"],
             "odds_basis": pool["odds_basis"], "min_odds": pool["min_odds"],
