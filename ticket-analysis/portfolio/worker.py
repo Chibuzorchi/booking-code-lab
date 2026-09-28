@@ -41,6 +41,7 @@ import json
 import os
 import re
 import select
+import signal
 import shutil
 import subprocess
 import sys
@@ -94,7 +95,16 @@ class JobBusyError(RuntimeError):
 
 
 class LaunchError(RuntimeError):
-    """The worker could not be started; see message for ownership state."""
+    """The worker could not be started.
+
+    uncertain=True means a worker may still be running and holding the
+    provider lock (ownership retained); uncertain=False is a definitive
+    launch failure with nothing left running.
+    """
+
+    def __init__(self, message: str, uncertain: bool = False):
+        super().__init__(message)
+        self.uncertain = uncertain
 
 
 def default_workspace() -> Path:
@@ -196,6 +206,7 @@ def main():
             pass
 
     fd = None
+    run_fd = None
     wrote_sidecar = False
     try:
         os.makedirs(os.path.dirname(lock_path), exist_ok=True)
@@ -211,15 +222,20 @@ def main():
                 pass
             report({"ok": False, "error": "busy", "owner": previous})
             return 1
+        owner = json.loads(owner_json)
+        run_fd = owner.pop("run_lock_fd", None)
+        if run_fd is None:
+            run_fd = os.open(os.path.join(os.path.dirname(log_path), "run.lock"),
+                             os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(run_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         log = open(log_path, "wb")
         os.dup2(log.fileno(), 1)
         os.dup2(log.fileno(), 2)
         child = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
-                                 pass_fds=(fd,))
+                                 pass_fds=(fd, run_fd))
         pause = float(os.environ.get("__PAUSE_ENV__", "0"))
         if pause:
             time.sleep(pause)
-        owner = json.loads(owner_json)
         owner["pid"] = os.getpid()
         owner["worker_pid"] = child.pid
         try:
@@ -235,13 +251,31 @@ def main():
             report({"ok": False, "error": "sidecar: " + str(exc)})
             return 1
         wrote_sidecar = True
-        report({"ok": True, "worker_pid": child.pid})
 
         def forward(signum, frame):
             child.terminate()
 
+        def force(signum, frame):
+            child.kill()
+
         signal.signal(signal.SIGTERM, forward)
-        return child.wait()
+        signal.signal(signal.SIGUSR1, force)
+        report({"ok": True, "worker_pid": child.pid})
+        rc = child.wait()
+        # Durable, run-specific completion evidence for crash recovery: the
+        # registry never infers success from an extract's presence alone.
+        try:
+            evidence = {"provider": owner["provider"], "run_id": owner["run_id"],
+                        "worker_pid": child.pid, "exit_code": rc,
+                        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            exit_path = os.path.join(os.path.dirname(log_path), "worker.exit.json")
+            tmp = exit_path + ".tmp"
+            with open(tmp, "w") as stream:
+                json.dump(evidence, stream)
+            os.replace(tmp, exit_path)
+        except OSError:
+            pass
+        return rc
     finally:
         if wrote_sidecar:
             try:
@@ -250,6 +284,8 @@ def main():
                 pass
         if fd is not None:
             os.close(fd)
+        if run_fd is not None:
+            os.close(run_fd)
         try:
             pipe.close()
         except OSError:
@@ -326,6 +362,13 @@ class ScanJob:
         if self.process.poll() is None:
             self.process.terminate()
 
+    def kill_worker(self) -> bool:
+        """Ask the live supervisor to kill its own child; never use a saved PID."""
+        if self.process.poll() is not None:
+            return False
+        self.process.send_signal(signal.SIGUSR1)
+        return True
+
 
 class WorkerHost:
     """Launches and owns provider worker subprocesses for one workspace.
@@ -337,9 +380,12 @@ class WorkerHost:
     """
 
     def __init__(self, workspace: Path | str | None = None,
-                 python: str | None = None):
+                 python: str | None = None, report_timeout_s: float = 30.0,
+                 reap_timeout_s: float = 30.0):
         self.workspace = Path(workspace).resolve() if workspace else default_workspace()
         self.python = python or sys.executable
+        self.report_timeout_s = report_timeout_s
+        self.reap_timeout_s = reap_timeout_s
         self._jobs: dict[str, ScanJob] = {}
         self._jobs_guard = threading.Lock()
 
@@ -370,7 +416,8 @@ class WorkerHost:
     def start_scan(self, provider: str, seed: str, *, max_qualifying: int = 0,
                    min_odds: float | None = None, max_odds: float | None = None,
                    max_codes: int | None = None, depth: int | None = None,
-                   env_extra: dict | None = None, run_dir: Path | None = None) -> ScanJob:
+                   env_extra: dict | None = None, run_dir: Path | None = None,
+                   run_lock_fd: int | None = None) -> ScanJob:
         if not isinstance(seed, str) or not seed.strip():
             raise ValueError("seed must be a non-empty booking code")
         root = self.provider_root(provider)
@@ -379,8 +426,11 @@ class WorkerHost:
         started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         # Allocate an ABSOLUTE run dir; only a directory successfully created
-        # here is owned by this call and may ever be removed by it.
+        # HERE is owned by this call and may ever be removed by it. A supplied
+        # run_dir that already exists is ADOPTED: the caller (e.g. the run
+        # registry) owns its lifecycle, and this call never deletes it.
         owned_dir: Path | None = None
+        adopted = False
         if run_dir is None:
             for _ in range(5):
                 candidate = self.runs_root() / provider / self._new_run_id(provider)
@@ -394,11 +444,17 @@ class WorkerHost:
                 raise LaunchError(f"cannot allocate a fresh run dir for {provider}")
         else:
             supplied = Path(run_dir).resolve()
-            try:
-                supplied.mkdir(parents=True, exist_ok=False)
-            except FileExistsError:
-                raise LaunchError(f"run dir already exists: {supplied}")
-            owned_dir = supplied
+            if supplied.exists():
+                if not supplied.is_dir():
+                    raise LaunchError(f"run dir path is not a directory: {supplied}")
+                owned_dir = supplied
+                adopted = True
+            else:
+                try:
+                    supplied.mkdir(parents=True, exist_ok=False)
+                except FileExistsError:
+                    raise LaunchError(f"run dir already exists: {supplied}")
+                owned_dir = supplied
 
         argv = scan_argv(self.python, seed, owned_dir, max_qualifying=max_qualifying,
                          min_odds=min_odds, max_odds=max_odds,
@@ -406,6 +462,8 @@ class WorkerHost:
         env = isolated_env(self.workspace, env_extra)
         owner = {"provider": provider, "run_id": owned_dir.name,
                  "started_at": started_at}
+        if run_lock_fd is not None:
+            owner["run_lock_fd"] = run_lock_fd
 
         pipe_r, pipe_w = os.pipe()
         supervisor_argv = supervisor_command(
@@ -416,17 +474,18 @@ class WorkerHost:
                 process = subprocess.Popen(supervisor_argv, cwd=root, env=env,
                                            stdout=subprocess.DEVNULL,
                                            stderr=subprocess.DEVNULL,
-                                           pass_fds=(pipe_w,))
+                                           pass_fds=(pipe_w,) + ((run_lock_fd,) if run_lock_fd is not None else ()))
             except OSError as exc:
                 raise LaunchError(f"cannot start worker for {provider}: {exc}") from exc
         except BaseException:
             os.close(pipe_r)
             os.close(pipe_w)
-            shutil.rmtree(owned_dir, ignore_errors=True)
+            if not adopted:
+                shutil.rmtree(owned_dir, ignore_errors=True)
             raise
         os.close(pipe_w)
 
-        report = self._read_report(pipe_r, timeout=30.0)
+        report = self._read_report(pipe_r, timeout=self.report_timeout_s)
         os.close(pipe_r)
         if report is None:
             # Supervisor died before reporting, or never reported in time.
@@ -437,12 +496,14 @@ class WorkerHost:
                 raise LaunchError(
                     f"worker supervisor for {provider} never reported and the "
                     f"provider lock is still held by a live worker; run dir "
-                    f"{owned_dir} retained")
-            shutil.rmtree(owned_dir, ignore_errors=True)
+                    f"{owned_dir} retained", uncertain=True)
+            if not adopted:
+                shutil.rmtree(owned_dir, ignore_errors=True)
             raise LaunchError(f"worker supervisor for {provider} exited before reporting")
         if not report.get("ok"):
             self._reap(process)
-            shutil.rmtree(owned_dir, ignore_errors=True)
+            if not adopted:
+                shutil.rmtree(owned_dir, ignore_errors=True)
             if report.get("error") == "busy":
                 raise JobBusyError(provider, report.get("owner"))
             raise LaunchError(f"worker supervisor for {provider} failed: "
@@ -492,8 +553,10 @@ class WorkerHost:
         """Probe whether any process holds the provider flock (PID-free)."""
         try:
             fd = os.open(lock_file, os.O_RDWR)
-        except OSError:
+        except FileNotFoundError:
             return False
+        except OSError:
+            return True  # inaccessible ownership evidence must fail closed
         try:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -503,8 +566,7 @@ class WorkerHost:
         finally:
             os.close(fd)
 
-    @staticmethod
-    def _reap(process: subprocess.Popen) -> int | None:
+    def _reap(self, process: subprocess.Popen) -> int | None:
         """Bounded wait for a supervisor; SIGTERM then SIGKILL escalation.
 
         SIGTERM lets the supervisor's handler forward termination to its
@@ -512,7 +574,7 @@ class WorkerHost:
         down with it. The lock probe afterwards decides run-dir retention.
         """
         try:
-            return process.wait(timeout=30)
+            return process.wait(timeout=self.reap_timeout_s)
         except subprocess.TimeoutExpired:
             pass
         try:

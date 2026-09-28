@@ -7,6 +7,7 @@ reads scan knobs from any BaseSettings. bet9ja and sportybet share this file.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -27,6 +28,15 @@ class CouponClient(Protocol):
     def decode(self, code: str) -> Coupon: ...
 
 
+# Stop reasons: why the candidate loop ended. "cancelled"/"failure" are
+# recorded by the run registry, not by the scanner (the worker never survives
+# its own cancellation to save).
+STOP_QUALIFYING_LIMIT = "qualifying_limit"
+STOP_TRY_BUDGET = "try_budget"
+STOP_CANDIDATES_EXHAUSTED = "candidates_exhausted"
+PROGRESS_INTERVAL_S = 0.5
+
+
 @dataclass
 class ScanResult:
     seed: str
@@ -40,6 +50,7 @@ class ScanResult:
     # preserved separately in the export for reference.
     odds_basis: str = "parsed_leg_product"
     unpriced: int = 0
+    stop_reason: str | None = None
 
     def best(self) -> Coupon | None:
         return max(self.qualifying, key=lambda c: c.parsed_leg_product, default=None)
@@ -50,11 +61,47 @@ class CouponScanner:
         self.client = client
         self.settings = settings
         self.logger = logger or get_logger("scanner")
+        self._last_progress = 0.0
+
+    def _progress_path(self) -> Path:
+        return self.settings.results_dir / "progress.json"
+
+    def _write_progress(self, result: ScanResult, force: bool = False) -> None:
+        """Structured live counters (atomic, throttled) for the run registry.
+
+        Never scraped from logs: this file is the worker's own progress
+        channel, and only the worker writes it.
+        """
+        now = time.monotonic()
+        if not force and now - self._last_progress < PROGRESS_INTERVAL_S:
+            return
+        self._last_progress = now
+        payload = {
+            "schema_version": 1,
+            "phase": "scanning",
+            "tried": result.tried,
+            "found_ok": result.found_ok,
+            "qualifying": len(result.qualifying),
+            "excluded_simulations": result.excluded_simulations,
+            "unpriced": result.unpriced,
+            "stop_reason": result.stop_reason,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        path = self._progress_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(".progress.tmp")
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
 
     def scan(self, seed: str, min_total_odds: float | None = None) -> ScanResult:
         min_odds = self.settings.min_total_odds if min_total_odds is None else min_total_odds
         result = ScanResult(seed=seed, effective_min_odds=min_odds)
         seen_fingerprints: set[frozenset[str]] = set()
+        self._last_progress = 0.0
+        self._write_progress(result, force=True)
 
         seed_coupon = self.client.decode(seed)
         if seed_coupon.ok:
@@ -97,6 +144,7 @@ class CouponScanner:
                 done = next(as_completed(in_flight))
                 in_flight.pop(done)
                 coupon = done.result()
+                self._write_progress(result)
                 if not coupon.ok:
                     continue
                 result.found_ok += 1
@@ -129,13 +177,26 @@ class CouponScanner:
                         f"leg-product {coupon.parsed_leg_product}"
                     )
                     if self.settings.max_qualifying and len(result.qualifying) >= self.settings.max_qualifying:
+                        result.stop_reason = STOP_QUALIFYING_LIMIT
                         exhausted = True
                         break
+                self._write_progress(result)
+
+        if result.stop_reason is None:
+            if (self.settings.max_qualifying
+                    and len(result.qualifying) >= self.settings.max_qualifying):
+                result.stop_reason = STOP_QUALIFYING_LIMIT
+            elif result.tried >= self.settings.max_codes_to_try:
+                result.stop_reason = STOP_TRY_BUDGET
+            else:
+                result.stop_reason = STOP_CANDIDATES_EXHAUSTED
+        self._write_progress(result, force=True)
 
         self.logger.info(
             f"Scan done: tried {result.tried}, valid {result.found_ok}, "
             f"qualifying (>= {min_odds}) {len(result.qualifying)}, "
-            f"simulation coupons excluded {result.excluded_simulations}"
+            f"simulation coupons excluded {result.excluded_simulations}, "
+            f"stop reason {result.stop_reason}"
         )
         return result
 
@@ -159,7 +220,8 @@ class CouponScanner:
             stream.write("".join(f"{c.code} │ {c.num_legs} │ {c.parsed_leg_product:,.2f}\n" for c in ranked))
 
         extract_path = extracts_dir / f"scan_{result.seed}_{stamp}.json"
-        with extract_path.open("x", encoding="utf-8") as stream:
+        extract_tmp = extracts_dir / f".tmp-{stamp}"
+        with extract_tmp.open("w", encoding="utf-8") as stream:
             json.dump({
             "provider": getattr(self.settings, "provider", ""),
             "seed": result.seed,
@@ -169,6 +231,7 @@ class CouponScanner:
             "unpriced_excluded": result.unpriced,
             "simulation_filter": "Z. / SRL / simulated / simulation / virtual labels",
             "odds_basis": result.odds_basis,
+            "stop_reason": result.stop_reason,
             "saved_at": datetime.now(timezone.utc).isoformat(),
             "min_total_odds": result.effective_min_odds if result.effective_min_odds is not None else self.settings.min_total_odds,
             "max_total_odds": self.settings.max_total_odds,
@@ -181,6 +244,7 @@ class CouponScanner:
             "request_workers": self.settings.request_workers,
             "qualifying": [c.as_dict() for c in sorted(eligible, key=lambda c: c.code)],
         }, stream, indent=2, allow_nan=False)
+        os.replace(extract_tmp, extract_path)
 
         self.logger.info(
             f"Saved {len(ranked)} code(s) -> {codes_path}  |  full extract -> {extract_path}"
