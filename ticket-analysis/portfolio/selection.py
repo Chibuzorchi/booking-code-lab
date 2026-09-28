@@ -15,8 +15,71 @@ even when a pool mixes both.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 
 from .analysis import canonical
+
+
+class ParamError(ValueError):
+    """A request-parameter problem the API surfaces as HTTP 400.
+
+    Raised by parse_decorrelate_params so the /api/decorrelate handler can turn a
+    bad max_exposure/target into a clean 400 BEFORE select_subset would raise its
+    own ValueError (which, uncaught in a handler, becomes a 500).
+    """
+
+
+def _as_positive_int(value, name):
+    """Coerce a request value to an int >= 1 or raise ParamError.
+
+    Accepts a real int, an integral float (2.0), or a numeric string ("2").
+    Rejects booleans, non-integral floats, blanks, and anything < 1 — matching
+    select_subset's own domain (int >= 1) so the two never disagree.
+    """
+    if isinstance(value, bool):
+        raise ParamError(f"{name} must be an integer >= 1")
+    if isinstance(value, int):
+        ivalue = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise ParamError(f"{name} must be a whole number >= 1")
+        ivalue = int(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ParamError(f"{name} must be an integer >= 1")
+        try:
+            ivalue = int(text)
+        except ValueError:
+            raise ParamError(f"{name} must be an integer >= 1")
+    else:
+        raise ParamError(f"{name} must be an integer >= 1")
+    if ivalue < 1:
+        raise ParamError(f"{name} must be >= 1")
+    return ivalue
+
+
+def parse_decorrelate_params(raw):
+    """Validate/normalize /api/decorrelate request params.
+
+    raw: a mapping (parsed JSON body or query dict). Returns
+    {"max_exposure": int>=1, "target": int>=1 or None}.
+
+    max_exposure defaults to 1 (fully independent: no selection shared by two
+    selected codes) when absent/None/blank. target is optional. Any bad value
+    raises ParamError -> the handler answers HTTP 400, never a 500.
+    """
+    if raw is None:
+        raw = {}
+    elif not isinstance(raw, Mapping):
+        raise ParamError("request body must be a JSON object")
+    me = raw.get("max_exposure")
+    max_exposure = 1 if me is None or (isinstance(me, str) and not me.strip()) else _as_positive_int(me, "max_exposure")
+
+    tg = raw.get("target")
+    target = None if tg is None or (isinstance(tg, str) and not tg.strip()) else _as_positive_int(tg, "target")
+
+    return {"max_exposure": max_exposure, "target": target}
 
 
 def _bare_code(ticket_id):

@@ -131,5 +131,75 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(rows["Y1"]["uniqueness_tier"], "1-2 shared games")
 
 
+class DecorrelateParamValidationTests(unittest.TestCase):
+    """F1: parse_decorrelate_params guards the /api/decorrelate domain (int >= 1)
+    BEFORE select_subset runs, so bad input is a 400 not a 500 — and anything it
+    accepts is something select_subset also accepts."""
+
+    def parse(self, raw):
+        from portfolio.selection import parse_decorrelate_params
+        return parse_decorrelate_params(raw)
+
+    def bad(self, raw, needle="must be"):
+        from portfolio.selection import ParamError
+        with self.assertRaises(ParamError) as cm:
+            self.parse(raw)
+        self.assertIn(needle, str(cm.exception))
+
+    def test_defaults_to_exposure_one_no_target(self):
+        self.assertEqual(self.parse({}), {"max_exposure": 1, "target": None})
+        self.assertEqual(self.parse(None), {"max_exposure": 1, "target": None})
+
+    def test_blank_and_none_exposure_default_to_one(self):
+        self.assertEqual(self.parse({"max_exposure": None})["max_exposure"], 1)
+        self.assertEqual(self.parse({"max_exposure": ""})["max_exposure"], 1)
+        self.assertEqual(self.parse({"max_exposure": "  "})["max_exposure"], 1)
+
+    def test_zero_and_negative_rejected(self):
+        self.bad({"max_exposure": 0}, ">= 1")
+        self.bad({"max_exposure": -1}, ">= 1")
+        self.bad({"max_exposure": "0"}, ">= 1")
+
+    def test_bool_rejected(self):
+        self.bad({"max_exposure": True})
+        self.bad({"max_exposure": False})
+
+    def test_string_and_integral_float_coerced(self):
+        self.assertEqual(self.parse({"max_exposure": "2"})["max_exposure"], 2)
+        self.assertEqual(self.parse({"max_exposure": 3.0})["max_exposure"], 3)
+
+    def test_non_integral_and_garbage_rejected(self):
+        self.bad({"max_exposure": 2.5}, "whole number")
+        self.bad({"max_exposure": "abc"})
+        self.bad({"max_exposure": [1]})
+
+    def test_target_optional_and_validated(self):
+        self.assertIsNone(self.parse({"max_exposure": 1})["target"])
+        self.assertIsNone(self.parse({"target": None})["target"])
+        self.assertIsNone(self.parse({"target": ""})["target"])
+        self.assertEqual(self.parse({"target": "3"})["target"], 3)
+        self.bad({"target": 0}, ">= 1")
+        self.bad({"target": True})
+
+    def test_none_body_uses_defaults(self):
+        self.assertEqual(self.parse(None), {"max_exposure": 1, "target": None})
+
+    def test_falsy_non_mapping_bodies_rejected_not_silently_defaulted(self):
+        # [], False, 0, '' must NOT sneak through as defaults -- only None/{} may.
+        for body in ([], False, 0, ""):
+            self.bad(body, "must be a JSON object")
+
+    def test_truthy_non_mapping_bodies_raise_paramerror_not_attributeerror(self):
+        for body in ([1], True, 1, "x", 3.5):
+            self.bad(body, "must be a JSON object")
+
+    def test_parsed_output_is_accepted_by_select_subset(self):
+        # domain-agreement: whatever parse returns, select_subset must not reject.
+        for raw in ({}, {"max_exposure": "1"}, {"max_exposure": 2, "target": "1"}):
+            p = self.parse(raw)
+            # empty pool is fine; the point is no ValueError from the domain guard.
+            select_subset([], p["max_exposure"], p["target"])
+
+
 if __name__ == "__main__":
     unittest.main()

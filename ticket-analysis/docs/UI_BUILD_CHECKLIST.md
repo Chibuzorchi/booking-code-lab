@@ -24,14 +24,16 @@ STATUS Flags wired and offline integration verified (external review: real main(
        rejects < 0 at the CLI. `--run-dir` -> settings.results_dir, so save() writes
        extracts/, codes/, index.html under the run folder; CLI now refuses a dir that
        already holds an extract (guards accidental re-run contamination of Stage 2's
-       glob). NOTE: run-directory exclusivity properly belongs to the runner (F5); this
-       flag + guard alone does NOT fully resolve L4 -- downstream stages must consume the
-       exact committed extract path, not glob the dir. Negative-count + re-run guards
-       verified to exit non-zero on both providers.
+       glob). NOTE: the re-run guard is a TOCTOU check, not a reservation -- two
+       processes can both pass it before either writes (concurrent-start race). It stops
+       accidental sequential re-runs, not concurrent starts. Atomic run ownership +
+       exact committed-extract-path consumption (not dir globbing) stay OPEN under
+       F5/F2 and are the real L4 fix. Negative-count + re-run guards verified to exit
+       non-zero on both providers (bet9ja scan_code.py:63-68 / sportybet:68-73).
 
 ---
 
-## F1. Stage-3 max_exposure domain  [BLOCKER]
+## F1. Stage-3 max_exposure domain  [BLOCKER]  [PARTIAL 2026-09-28 — validator done; API route/UI knob deferred to F6/F7]
 WHAT   select_subset rejects max_exposure < 1; the plan/UI must never send 0.
 WHERE  portfolio/selection.py:66 (raises ValueError). New API handler /api/decorrelate.
 CHANGE - UI knob: integer, min = 1, default = 1 (= fully independent: no selection shared
@@ -41,8 +43,22 @@ CHANGE - UI knob: integer, min = 1, default = 1 (= fully independent: no selecti
          let the ValueError become a 500.
 DONE   /api/decorrelate with max_exposure=0 -> 400 "must be >= 1"; with 1 -> a set whose
        codes share no selection.
+STATUS Validator landed (branch fix/f1-exposure-validation). selection.py now exports
+       ParamError + parse_decorrelate_params(raw) -> {max_exposure:int>=1, target:int>=1|None},
+       defaulting max_exposure=1, and REJECTING 0/negatives/bools/non-integral/garbage
+       BEFORE select_subset runs (so the future handler answers 400, never 500). Domain
+       matches select_subset exactly -- test_parsed_output_is_accepted_by_select_subset
+       proves parse output is never rejected downstream. Outer body is guarded too:
+       None -> defaults; any non-mapping (falsy [] False 0 '' OR truthy [1] True 1 'x'
+       3.5) -> ParamError "request body must be a JSON object", never AttributeError
+       (so the 400-not-500 promise holds for malformed bodies). 11 validator tests;
+       full suite 70 OK; direct `python tests/test_selection.py` now runs all 21 (the
+       __main__ block was mid-file and skipped the new class -- moved to bottom).
+       REMAINING (moves to F6/F7, not F1): wire /api/decorrelate to call parse_ first and
+       map ParamError->400; add the UI integer knob (min 1, default 1) with the copy
+       "max codes any one selection may appear in".
 
-## F2. Stage-3 input shape + full pool  [HIGH]
+## F2. Stage-3 input shape + full pool  [HIGH] [PARTIAL 2026-09-28 — adapter tested; API wiring deferred to F6]
 WHAT   select_subset needs tickets shaped {id, provider, num_legs, odds, legs:[{key,
        event, market, pick}]}. Raw extract coupons are NOT that shape (they have
        `selections` + `selection_key`, no `legs`/`key`). And it must run on the FULL
@@ -50,16 +66,30 @@ WHAT   select_subset needs tickets shaped {id, provider, num_legs, odds, legs:[{
 WHERE  Adapter EXISTS: analysis.normalize_ticket(raw, provider) (analysis.py:133) emits
        legs[{"key",...}]. Reference pipeline: reporting.py:250-273 (read extract ->
        normalize_ticket -> drop issues -> dedup by id -> band -> select_subset).
-CHANGE - /api/decorrelate builds its pool exactly like reporting.py:250-273, from the
-         RUN's extract (results/runs/<id>/), NOT from the distinct_tickets.json.
+CHANGE - /api/decorrelate uses portfolio.decorrelation.decorrelate_extract with one
+         explicit committed run extract path, never a directory glob or distinct list.
+         The runner resolves the path and provider; HTTP clients must not supply paths.
+       - Normalize, exclude invalid/expired and foreign-provider tickets, deduplicate
+         identical code observations; fail on conflicting observations without choosing
+         a winner by filename or input order. Return exclusion reasons and pool counts.
+       - Require explicit odds_basis + min_odds, optional max_odds=None (no ceiling).
+         Missing odds on that basis are excluded without fallback. This exposes the
+         policy choice; aligning it with harvesting remains F4's responsibility.
        - Keep every band-passing coupon, including overlapping ones.
        - Return result as a GREEDY MAXIMAL feasible subset (not "maximum"/"largest");
          surface result["rejected"] (reason + blocking selections) for explainability.
-DONE   Decorrelate the bet9ja 468-pool at max_exposure=1 returns >= 42 codes (it grows
-       the fully-distinct 42 by adding one code per overlap cluster); no selected pair
-       shares a selection.
+DONE   Deterministic three-code fixture: A/B share a selection, C is disjoint. Full
+       pool size stays 3; cap 1 selects C and one of A/B; cap 2 selects all three.
+       Fixed-clock tests exclude expired/malformed tickets, enforce each provider,
+       prove explicit odds-basis filtering and isolation from neighboring extracts.
+STATUS Offline adapter and nine tests implemented in portfolio/decorrelation.py and
+       tests/test_decorrelation.py. Selection rejection details are preserved. Historical
+       468 -> >=42 is not an acceptance oracle: expiry changes eligibility over time.
+       REMAINING F6: wire route to the adapter using runner-owned extract/provider/policy,
+       map ParamError to 400 and surface ExtractError as a failed analysis, not empty
+       success. F5 still owns committed-path provenance; F2b owns shared stage identity.
 
-## F2b. One leg-identity across Stage 2 and Stage 3  [HIGH]
+## F2b. One leg-identity AND one eligible pool across Stage 2/3  [HIGH]  [DONE 2026-09-28 v2]
 WHAT   Stage 2 distinctness and Stage 3 exposure are currently computed on DIFFERENT
        keys, so their notions of "same selection" disagree.
 WHERE  Stage 2: uniqueness.selection_key (uniqueness.py:26) — prefers raw selection_key,
@@ -67,10 +97,29 @@ WHERE  Stage 2: uniqueness.selection_key (uniqueness.py:26) — prefers raw sele
        (contracts.py:19-30) — provider-namespaced, native + display fallback.
 CHANGE Unify on contracts.identity as the single leg key: have uniqueness derive its leg
        key from normalize_ticket's legs[].key (drop its private selection_key), so
-       "distinct" (Stage 2) and "0 shared exposure" (Stage 3 @ max_exposure=1) are the
-       SAME set on the SAME basis.
-DONE   For one run: count of fully-distinct codes (Stage 2) == codes with zero shared
-       selections under the Stage-3 identity; the two stages never disagree on a leg.
+       both stages count shared selections on the SAME basis and eligible pool.
+DONE   For one run BOTH stages build the SAME eligible pool from ONE builder
+       (decorrelation.build_pool: same extract, provider, odds basis+band, duplicate/
+       conflict handling) on the SAME leg identity. Corrected criterion: the fully-
+       distinct set (Stage 2) == eligible codes whose every leg is unique across the
+       WHOLE eligible pool. On the same pool with no target limit, distinct ⊆ selected
+       at max_exposure=1; equality is possible. With a target limit, inclusion is not
+       guaranteed.
+STATUS Done (v2 — first pass FAILED review: Stage 2 had its own ingestion that ignored
+       the odds band, accepted foreign-provider coupons, and diverged on conflicting
+       duplicates). FIX: both stages now consume ONE builder, decorrelation.build_pool.
+       uniqueness.load_coupons is gone; uniqueness.analyze(tickets) takes build_pool's
+       normalized tickets and analyze_extract(extract, provider, *, odds_basis, min_odds,
+       max_odds) is the Stage-2 entry. build_pool stamps ticket['raw'] so distinct_page
+       keeps every display field. Leg identity = canonical(contracts.identity) on both
+       sides. Integration tests (real extract files, not a _norm_legs helper) cover the
+       three reproduced discrepancies: odds band applied in Stage 2; foreign provider
+       excluded; conflicting duplicate raises ExtractError in BOTH stages -- plus the
+       corrected subset criterion (distinct {C} is a strict subset of selected {C, A|B}).
+       distinct_page/uniqueness CLIs now take --extract + --provider + odds policy (run-
+       scoped), matching F0 --run-dir. Both CLIs REQUIRE --odds-basis. The distinct
+       page displays, labels, and sorts by that basis without fallback. Regression
+       coverage includes equal sets, target truncation, and odds display/CLI policy.
 
 ## F3. Provider isolation via worker processes  [BLOCKER]
 WHAT   Both engines mutate process-global state, so two providers cannot share one
