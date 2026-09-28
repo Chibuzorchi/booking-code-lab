@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+reports/
+data/
+**/results/
+# Independent upstream checkout; keep out of the future parent repository.
+/sports-skills/
+# Historical snapshots and research remain local.
+/archive/

@@ -1,0 +1,18 @@
+{
+  "bizCode": 10000,
+  "data": {
+    "shareCode": "FIXTURE",
+    "betType": "multiple",
+    "ticket": {
+      "selections": [{"eventId": "sr:match:B1kJVsX-2R76hb1ZDH2kz4w", "marketId": "237", "specifier": "hcp=1.5", "outcomeId": "1715"}]
+    },
+    "outcomes": [{
+      "eventId": "sr:match:B1kJVsX-2R76hb1ZDH2kz4w",
+      "homeTeamName": "Fixture A",
+      "awayTeamName": "Fixture B",
+      "estimateStartTime": 1789858800000,
+      "markets": [{"id": "237", "specifier": "hcp=1.5", "desc": "Point handicap",
+        "outcomes": [{"id": "1715", "desc": "Away (-1.5)", "odds": "1.93"}]}]
+    }]
+  }
+}

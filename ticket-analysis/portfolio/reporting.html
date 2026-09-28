@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__ · Results</title>
+<style>
+:root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#182b29;background:#f4f6f3;font-size:15px;color-scheme:light}*{box-sizing:border-box}body{margin:0}button,input,select{font:inherit}button,select{cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #bb690c;outline-offset:3px}header{background:#123e35;color:#fff;padding:36px max(24px,calc((100vw - 1180px)/2)) 32px}.eyebrow{text-transform:uppercase;letter-spacing:.15em;font-size:12px;font-weight:700;color:#b4d5c5}h1{font-size:36px;margin:10px 0;font-weight:650;letter-spacing:-1px}header p{color:#d1e1d8;max-width:720px;line-height:1.6;margin:0}main{max-width:1228px;margin:auto;padding:28px 24px 60px}h2{font-size:20px;margin:0 0 6px}.tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:3px 9px;border-radius:20px;margin-left:10px;vertical-align:middle}.tag-banker{background:#e2f0e4;color:#1d6b3a}.tag-longshot{background:#fbe6cf;color:#8a4a0c}a{color:#165e4e}header a{color:inherit}.panel{background:white;border:1px solid #dce4dc;border-radius:14px;margin-bottom:20px;padding:24px}.controls{display:flex;gap:16px;align-items:end;flex-wrap:wrap}label{display:flex;flex-direction:column;gap:8px;font-size:13px;font-weight:600}input,select{padding:11px;border:1px solid #b8c8bd;border-radius:7px;background:#fff;color:#182b29;min-height:44px}.search{flex:1;min-width:230px}.search input{width:100%}button,.button{border:1px solid #b8c8bd;background:#f5f8f4;border-radius:7px;padding:10px 14px;color:#184b3e;min-height:42px;font-weight:600}button:disabled{opacity:.45;cursor:default}.notice{margin:10px 0 0;color:#5c6c64;font-size:13px;line-height:1.6}.list-top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:18px 0}.list-top p{margin:0}.ticket{border:1px solid #dce4dc;border-radius:9px;margin-top:10px;overflow:hidden}.ticket summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(120px,1fr) 65px minmax(125px,1fr) minmax(125px,1fr) 20px;gap:16px;padding:18px;align-items:center}.ticket summary::-webkit-details-marker{display:none}.ticket summary:hover{background:#f6f9f5}.ticket[open] summary{background:#edf4ed;border-bottom:1px solid #dce4dc}.ticket summary strong{font-family:ui-monospace,monospace;font-size:17px}.ticket summary small{display:block;font-size:11px;color:#5c6c64;margin-bottom:5px}.ticket summary .value{font-variant-numeric:tabular-nums}.chevron{color:#527363}.ticket[open] .chevron{transform:rotate(90deg)}.detail{padding:20px}.detail-top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}.detail-top p{margin:0;line-height:1.8;font-size:13px;color:#5c6c64}.scroll{overflow:auto}table{border-collapse:collapse;width:100%;text-align:left;font-size:13px}th{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6c64;background:#f7f9f5}th,td{padding:13px 10px;border-bottom:1px solid #e7ece4;vertical-align:top}td small{display:block;color:#67796d;margin-top:5px}.empty{padding:36px;text-align:center;color:#5c6c64}.footer{font-size:13px;line-height:1.8;color:#5c6c64}.footer summary{cursor:pointer;font-weight:600;color:#294d3d}.footer code{background:#eaf0e7;padding:2px 5px;border-radius:3px}noscript{display:block;padding:20px;background:#fff5e3}@media(max-width:700px){h1{font-size:28px}main{padding:18px 12px}.panel{padding:16px}.ticket summary{grid-template-columns:1fr 55px;gap:12px;padding:14px}.chevron{display:none}.detail{padding:12px}.detail-top{align-items:start}.list-top{align-items:start;flex-direction:column}.controls label{width:100%}}
+</style></head><body>
+<header><div class="eyebrow">__TITLE__</div><h1>Bookable codes</h1><p>Codes with total odds between 5,000 and 350,000, de-correlated so no game is shared between any two of them — one result can't sink several tickets.</p></header>
+<main>
+<noscript>Enable JavaScript to view the bookable codes.</noscript>
+<div class="controls" style="margin-bottom:20px"><label class="search">Search code, team, league or market<input id="search" type="search" placeholder="Filter by code or team…"></label></div>
+
+<section class="panel" aria-labelledby="ls-heading"><h2 id="ls-heading">Bookable codes<span class="tag tag-longshot">5,000–350,000 odds</span></h2>
+<p id="ls-summary" class="notice"></p>
+<div class="list-top"><p class="muted" id="ls-count" role="status"></p><button id="ls-export" type="button">Download codes</button></div>
+<div id="ls-cards"></div>
+<p class="empty" id="ls-empty" hidden>No codes yet. Run a scan to harvest and de-correlate fresh 5,000–350,000 coupons.</p></section>
+
+<details class="panel footer"><summary>What am I looking at?</summary><p>Each code is a real booking code you can load on the provider. Every code survives two filters: total odds between 5,000 and 350,000, and de-correlation — no two codes share a game, so one result cannot sink several tickets. Odds are calculated from recorded leg prices, not verified payout odds. Expand a code to see its games.</p><p id="generated"></p></details>
+</main>
+<script id="catalog" type="application/json">__CATALOG__</script>
+<script>
+const data=JSON.parse(document.getElementById('catalog').textContent), $=id=>document.getElementById(id);
+const fmt=v=>v==null?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:2});
+function node(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el;}
+async function copy(code,button){try{await navigator.clipboard.writeText(code);button.textContent='Copied';setTimeout(()=>button.textContent='Copy code',1500);}catch{const input=node('input');input.value=code;input.readOnly=true;input.setAttribute('aria-label','Booking code to copy');button.after(input);input.focus();input.select();}}
+function query(){return $('search').value.trim().toLocaleLowerCase();}
+function matching(bucket){const q=query();if(!bucket)return [];return bucket.codes.filter(c=>!q||[c.code,...c.legs.flatMap(l=>[l.event,l.league,l.market,l.pick])].join(' ').toLocaleLowerCase().includes(q));}
+function card(c){const el=node('details',undefined,'ticket'),sm=node('summary');
+const s=node('span');s.append(node('small','Booking code'),node('strong',c.code));
+const legsC=node('span');legsC.append(node('small','Legs'),node('span',String(c.num_legs),'value'));
+const oddsC=node('span');oddsC.append(node('small','Odds'),node('span',fmt(c.odds),'value'));
+const shC=node('span');shC.append(node('small','Shared games'),node('span',String(c.shared_leg_count),'value'));
+sm.append(s,legsC,oddsC,shC,node('span','›','chevron'));el.append(sm);
+el.addEventListener('toggle',()=>{if(!el.open||el.dataset.loaded)return;el.dataset.loaded='y';
+const d=node('div',undefined,'detail'),top=node('div',undefined,'detail-top'),btn=node('button','Copy code');btn.type='button';btn.addEventListener('click',()=>copy(c.code,btn));
+top.append(node('p',`${c.num_legs} legs · calculated odds ${fmt(c.odds)} · shares ${c.shared_leg_count} game(s) with other codes`),btn);d.append(top);
+const scroll=node('div',undefined,'scroll'),table=node('table'),thead=node('thead'),hr=node('tr');
+for(const n of ['Match / league','Market','Pick','Odds']){const th=node('th',n);th.scope='col';hr.append(th);}thead.append(hr);table.append(thead);
+const tb=node('tbody');for(const l of c.legs){const tr=node('tr'),ev=node('td',l.event||'Unknown match');ev.append(node('small',l.league||''));tr.append(ev,node('td',l.market||'—'),node('td',l.pick||'—'),node('td',fmt(l.odds)));tb.append(tr);}
+table.append(tb);scroll.append(table);d.append(scroll);el.append(d);});return el;}
+function renderBucket(bucket,ids){const box=$(ids.cards);box.replaceChildren();
+if(!bucket||!bucket.codes.length){$(ids.empty).hidden=false;$(ids.count).textContent='';$(ids.summary).textContent='';return;}
+$(ids.empty).hidden=true;const rows=matching(bucket),r=bucket.odds_range||{};
+$(ids.summary).textContent=`${bucket.selected_count} de-correlated code(s) from ${bucket.pool_size} scanned. Odds range ${fmt(r.min)} to ${fmt(r.max)} (median ${fmt(r.median)}). Calculated from recorded leg prices, not verified payout odds.`;
+$(ids.count).textContent=`${rows.length} of ${bucket.codes.length} shown, lowest odds first`;
+for(const c of rows)box.append(card(c));}
+function download(bucket,suffix){const rows=matching(bucket);if(!rows.length)return;const codes=rows.map(c=>c.code),blob=new Blob([codes.join('\n')+'\n'],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),a=node('a');a.href=url;a.download=data.provider+'-'+suffix+'-codes.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+const ls={cards:'ls-cards',empty:'ls-empty',count:'ls-count',summary:'ls-summary'};
+function render(){renderBucket(data.shortlist,ls);}
+$('search').addEventListener('input',render);
+$('ls-export').addEventListener('click',()=>download(data.shortlist,'bookable'));
+$('generated').textContent='Report generated '+data.generated+'.';
+render();
+</script></body></html>

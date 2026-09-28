@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "lower_odds": {"odds_basis": "site_displayed_odds", "min_total_odds": 1, "max_total_odds": 20, "max_legs": 6},
+    "longshot": {"odds_basis": "site_displayed_odds", "min_total_odds": 20, "max_total_odds": null}
+  },
+  "include_codes": [],
+  "exclude_codes": []
+}
