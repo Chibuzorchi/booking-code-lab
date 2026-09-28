@@ -25,6 +25,25 @@ def as_float(value: Any) -> float:
         return 0.0
 
 
+def _finite(value: Any) -> float | None:
+    """null-out non-finite numbers so exports stay valid JSON."""
+    try:
+        return float(value) if math.isfinite(float(value)) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _sanitize(value: Any) -> Any:
+    """Recursively replace non-finite floats with None (JSON-safe export)."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _sanitize(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize(val) for val in value]
+    return value
+
+
 @dataclass
 class Selection:
     key: str                 # stable per-selection key, used for dedupe
@@ -58,7 +77,7 @@ class Selection:
             "league": self.league,
             "market": self.market,
             "pick": self.sign,
-            "odds": self.odds,
+            "odds": _finite(self.odds),
             "kickoff": self.start_date,
         }
 
@@ -126,13 +145,13 @@ class Coupon:
     def as_dict(self) -> dict[str, Any]:
         return {
             "schema_version": 2,
-            "site_displayed_odds": self.site_total_odds,
-            "parsed_leg_product": self.parsed_leg_product,
+            "site_displayed_odds": _finite(self.site_total_odds),
+            "parsed_leg_product": _finite(self.parsed_leg_product),
             "payout_semantics": {"status": "unknown", "multiplier": None},
             "retrieval_completeness": self.retrieval_completeness,
-            "odds_context": self.odds_context,
+            "odds_context": _sanitize(self.odds_context),
             "bet_type": self.bet_type,
-            "selected_systems": self.selected_systems,
+            "selected_systems": _sanitize(self.selected_systems),
             "num_unavailable": self.num_unavailable,
             "mapping_errors": self.mapping_errors,
             "observed_at": self.observed_at,
@@ -142,8 +161,8 @@ class Coupon:
             "provider": self.provider,
             "coupon_id": self.coupon_id,
             "num_legs": self.num_legs,
-            "total_odds": self.total_odds,
-            "computed_odds": self.computed_odds,
+            "total_odds": _finite(self.total_odds),
+            "computed_odds": _finite(self.computed_odds),
             "selections": [s.as_dict() for s in self.selections],
             "error": self.error,
         }

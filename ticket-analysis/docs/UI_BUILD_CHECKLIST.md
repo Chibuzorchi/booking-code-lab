@@ -228,7 +228,7 @@ REMAINING (tracked under F5/F6/F7, not F3): durable status.json transitions +
        cancellation semantics, API routes, UI provider-switch run-state restore, and the
        live dual-provider extract acceptance above.
 
-## F4. Single odds basis end to end  [HIGH]
+## F4. Single odds basis end to end  [HIGH]  [DONE 2026-09-28 v2 — offline-verified both providers (review findings fixed); F6 API wiring + live confirmation remain under the whole-slice gate]
 WHAT   "odds" means different things per stage: sportybet scanner qualifies on total_odds
        (site odds when present); reporting/uniqueness band on parsed_leg_product. Stage-1
        "5,000-350,000" and Stage-2/3 numbers can then refer to different quantities.
@@ -240,6 +240,70 @@ CHANGE Pick parsed_leg_product as the canonical basis everywhere (provider-neutr
        number in every stage/UI as "recorded odds (leg product), not verified payout".
 DONE   A coupon whose site odds differ from its leg product gets the SAME in/out band
        decision at Stage 1 (scan qualify) and Stage 2/3 (report) — one basis, one answer.
+STATUS Implemented, offline-verified for BOTH providers (no new env setting; no
+       ODDS_BASIS switch — parsed_leg_product is the fixed basis, keeping worker env
+       isolation untouched):
+       - engine/scanner.py (both providers): qualification compares
+         coupon.parsed_leg_product (all leg prices finite and > 1, product finite)
+         against min/max (scanner.py:110-122); coupons without one are counted in
+         ScanResult.unpriced and never qualify — never falling back to site odds.
+         Site-displayed odds no longer gate the band. ScanResult records
+         odds_basis="parsed_leg_product" + unpriced (scanner.py:41-42); save() exports
+         both ("odds_basis", "unpriced_excluded", scanner.py:168-170); ranking, best()
+         and the codes file all use the leg product (scanner.py:45,151,158).
+       - engine/coupon.py (both providers): as_dict nulls out non-finite numbers
+         (selection odds, site_displayed_odds, total_odds, computed_odds via _finite,
+         coupon.py:28) so malformed/non-finite prices can never poison the extract
+         JSON; parsed_leg_product stays None for them. Site odds remain a SEPARATE
+         preserved field — never relabelled as leg product.
+       - scripts/scan_code.py (both providers): the scan summary ranks and prints the
+         leg product labelled "recorded leg-product odds ... NOT verified payout"
+         (scan_code.py:88-92).
+       - portfolio/decorrelation.py: harvest_odds_band(extract) translates the scan's
+         recorded policy into the Stage-2/3 band (decorrelation.py:17-42): requires
+         odds_basis == parsed_leg_product, maps the scanner's "no maximum" sentinel
+         (max_total_odds <= 0, or not recorded) to max_odds=None, and REJECTS
+         malformed/boolean/non-finite maxima (ExtractError) instead of silently going
+         uncapped — an absent maximum is uncapped, an invalid one is an error.
+         Contradictory positive bands are rejected too. build_pool/analyze_extract keep
+         their explicit (odds_basis, min_odds, max_odds) contract unchanged;
+         reporting's existing legends already label site vs calculated odds
+         (reporting.py:68-69).
+       - EXPORT HYGIENE: coupon.py as_dict nulls non-finite numbers at the top level
+         (_finite, coupon.py:28) AND recursively through nested exported structures
+         (_sanitize: odds_context, selected_systems, coupon.py:34-42), so a
+         non-finite provider value (e.g. sportybet displayTotalOdds=Infinity stashed
+         in odds_context by parser.py:137) can never corrupt the extract JSON; the
+         extract is dumped with allow_nan=False as a backstop (scanner.py:190). The
+         scan CLIs reject non-finite --min-odds/--max-odds-cap values outright.
+       - BAND CONTRACT: inclusive on both ends at BOTH stages (scanner: odds >= min
+         and (max <= 0 or odds <= max); build_pool excludes price < lower or
+         price > upper). Missing/malformed/non-finite/overflow -> unpriced at Stage 1
+         and missing_odds at Stage 2/3 — excluded by rule, never invented, no
+         site-odds fallback. bet9ja side-effect: its old qualify used computed_odds
+         (zero-lenient, rounded 2dp); it now uses the strict unrounded product, so
+         sub-cent boundary cases can flip in/out — intended (one basis, no rounding).
+VERIFIED OFFLINE (tests/test_odds_basis.py, 10 tests / 14 subtests; full suite from
+       ticket-analysis/: `python3 -m pytest tests -q -p no:cacheprovider` -> 121 passed,
+       35 subtests passed). Real scanner subprocesses per provider (offline fake
+       clients over the real mutate/scan paths) — and the tests now save the ACTUAL
+       scan() result through the real save(), translate its policy with
+       harvest_odds_band(), and feed that extract into build_pool AND analyze_extract
+       (capped and uncapped runs; tried/found_ok/unpriced/codes all asserted from the
+       real result, nothing hand-built). Covered: site in-band/product out-band;
+       product in-band/site out-band; exact lower and upper boundaries; above-cap;
+       no-ceiling (max 0 == max_odds None, above-cap coupon joins the pool); missing,
+       malformed (parser level), non-finite and overflowing prices (unpriced at
+       Stage 1, missing_odds at Stage 2/3 — never invented, no site-odds fallback);
+       harvest_odds_band rejects garbage/boolean/non-finite maxima and accepts
+       absent/<=0 sentinels; a REAL parser->save->analysis regression for a coupon
+       whose odds_context holds Infinity (strict JSON load succeeds, context value
+       null, product still 6,400 and in-pool); both odds quantities survive with
+       distinct values; report legend labels site vs calculated (not verified
+       payout); codes file values equal the exported leg products.
+REMAINING: F6 wires harvest_odds_band into the API using runner-owned extract+policy;
+       the live end-to-end harvest->distinct->decorrelate confirmation sits under the
+       whole-slice acceptance gate.
 
 ---
 
