@@ -165,3 +165,7 @@ captured candidates and keeps site odds separate from calculated leg products;
 it does not replace portfolio analysis or verify settlement.
 
 Local scan/analysis API: see [F6 API contract and examples](docs/F6_API.md).
+The same server hosts the three-stage console at `/app` (harvest -> distinct ->
+de-correlate), which drives that API from the browser. Copy buttons on every page
+share one helper (`portfolio/copy.js`): clipboard first, then a selectable-text
+fallback, so a code stays copyable when the clipboard is unavailable.

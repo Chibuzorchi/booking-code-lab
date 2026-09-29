@@ -11,6 +11,7 @@ import html
 from pathlib import Path
 
 from .contracts import odds_value
+from .pages import copy_js
 from .uniqueness import _bare_code, analyze_extract
 
 PROVIDER_LABEL = {"bet9ja": "bet9ja", "sportybet": "sportybet"}
@@ -69,7 +70,10 @@ main{{max-width:1100px;margin:auto;padding:24px}}
 summary small{{display:block;font-size:11px;color:#5c6c64;margin-bottom:4px}} summary strong{{font-family:ui-monospace,monospace;font-size:17px}}
 .n{{font-variant-numeric:tabular-nums}} .chev{{color:#527363}} .ticket[open] .chev{{transform:rotate(90deg)}}
 .copy{{border:1px solid #b8c8bd;background:#f5f8f4;border-radius:7px;padding:8px 10px;color:#184b3e;font-weight:600}}
-.copy.ok{{background:#1d6b3a;color:#fff;border-color:#1d6b3a}}
+button.is-copied{{background:#1d6b3a;color:#fff;border-color:#1d6b3a}}
+button.is-copy-failed{{background:#fbe6cf;color:#8a4a0c;border-color:#bb690c}}
+.copy-fallback{{display:block;margin-top:8px;width:100%;font:14px/1.4 ui-monospace,monospace;padding:8px;border:1px solid #bb690c;border-radius:6px;background:#fff8ef;color:#182b29}}
+summary .copy-fallback{{grid-column:1/-1}}
 .detail{{padding:8px 16px 16px}} table{{border-collapse:collapse;width:100%;text-align:left;font-size:13px}}
 th{{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6c64;background:#f7f9f5}}
 th,td{{padding:11px 9px;border-bottom:1px solid #e7ece4;vertical-align:top}} td small{{display:block;color:#67796d;margin-top:4px}} td.n{{text-align:right}}
@@ -80,11 +84,12 @@ th,td{{padding:11px 9px;border-bottom:1px solid #e7ece4;vertical-align:top}} td 
 <div class="bar"><button class="allbtn" type="button" onclick="cpAll(this)">Copy all {n} codes</button></div></header>
 <main>{''.join(cards)}</main>
 <textarea id="all" style="position:absolute;left:-9999px" aria-hidden="true">{allcodes}</textarea>
+<script>{copy_js()}</script>
 <script>
-function flash(b,t){{const o=b.textContent;b.textContent=t;b.classList.add('ok');setTimeout(()=>{{b.textContent=o;b.classList.remove('ok');}},1400);}}
-async function write(t){{try{{await navigator.clipboard.writeText(t);return true;}}catch(e){{return false;}}}}
-async function cp(b,ev){{ev.preventDefault();ev.stopPropagation();flash(b,(await write(b.dataset.code))?'Copied':'Copy failed');}}
-async function cpAll(b){{const a=document.getElementById('all');let ok=await write(a.value);if(!ok){{a.style.left='';a.focus();a.select();ok=document.execCommand&&document.execCommand('copy');a.style.left='-9999px';}}flash(b,ok?'All copied':'Select failed');}}
+// Both buttons go through the one shared helper, so per-code copy gets the same
+// clipboard-then-select-the-text escalation that copy-all already had.
+function cp(b,ev){{ev.preventDefault();ev.stopPropagation();Copy.button(b,b.dataset.code,{{label:'Booking code to copy'}});}}
+function cpAll(b){{Copy.button(b,document.getElementById('all').value,{{copied:'All copied',label:'All distinct booking codes to copy'}});}}
 </script></body></html>"""
 
 

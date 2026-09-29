@@ -395,13 +395,62 @@ STATUS Added all five routes plus POST /api/scan/<id>/cancel. Loopback binding,
        Explicit seed required; fresh_seed=true returns 501. Booking orchestration,
        live provider acceptance, and F7 browser work remain outstanding.
 
-## F7. Shared copy() helper + 3-stage page
+## F7. Shared copy() helper + 3-stage page  [DONE 2026-09-29 — browser acceptance still open]
 WHAT   Copy JS is duplicated (reporting.html, distinct_page.py) and distinct_page's
        per-code copy has no fallback.
 CHANGE Extract one copy helper (clipboard + select-text fallback) used by both the
        distinct view and the 3-stage page. Build the page: Stage1 form -> poll ->
        Stage2 distinct (per-code Copy + Copy-all) -> Stage3 decorrelate.
 DONE   Per-code copy works with the fallback path; one helper, no duplication.
+STATUS Helper: portfolio/copy.js, inlined (never linked) into every page through
+       portfolio/pages.py -- the live report, the distinct page and the new console.
+       Two of those are standalone files opened from disk, where a <script src> would
+       not resolve, so inlining is deliberate. Escalation is clipboard -> execCommand
+       -> select-the-text. The per-code copy that had NO fallback now takes the same
+       path as copy-all: a failed copy leaves the code in a focused, selected, readonly
+       field beside the button, and that field swallows its own clicks and Enter/Space
+       so selecting the text cannot toggle the card it sits inside. A second failure
+       reuses the one field. tests/fixtures/copy_probe.js runs copy.js under node
+       against a DOM stub, so all three paths are executed rather than asserted from
+       source; removing the fallback or the execCommand step each fails a test
+       (mutation-checked). A source test pins that navigator.clipboard and execCommand
+       appear in copy.js and in no other page source.
+       Page: GET /app on the same server, loopback-guarded like every other route and
+       a static shell holding no run data (serving it does not rebuild the report).
+       Stage 1 form -> POST /api/scan -> 3s poll of GET /api/scan/<id> with live
+       counters, stop_reason/error, cancel, and a GET /api/runs picker for earlier
+       runs. Stage 2 POST /api/distinct: funnel, labelled band, per-code Copy and
+       Copy-all, most-reused game+option table. Stage 3 POST /api/decorrelate:
+       max_exposure (min and default 1, clamped in the input and refused before the
+       request), optional target, full-pool metadata, selected rows with their shared
+       legs, and the rejection reasons. A stage unlocks only on the previous result,
+       and reloading a different run clears stages 2-3. Gate 2 is shown in the UI: at
+       cap 1 with no target the page reports whether every Stage-2 distinct code is
+       inside the selection, and names any that are not.
+       State: every request carries the generation it was issued under, so a reply for
+       a run or provider the user has left drops itself instead of painting over the
+       current one (found in review: a late Stage-2 reply could attach run A's analysis
+       to run B and unlock Stage 3). One poll is in flight at a time. Both stages are
+       dropped on any change of run id, whatever the new run's state. Each provider
+       keeps its own view -- run, poller and both analyses -- stashed on switch and
+       repainted on return, so a run bet9ja still owns never blocks a sportybet launch.
+       The states that hold a provider are exactly registry.active_run's
+       (starting/running/cancelled_unresolved), so cancelled_unresolved keeps polling
+       and keeps that provider's launch disabled until it settles to cancelled.
+       tests/fixtures/console_probe.js executes the console script against a DOM stub
+       and resolves each request by hand after the user has moved on: nine behavioural
+       tests, and reverting any one of the eight guards fails one of them. 195 tests
+       pass.
+       Follow-up review fixes: provider switches immediately clear/lock history;
+       loaded status must match the selected provider. Stage 2/3 request tokens own
+       button cleanup and block duplicate requests. Scan submissions belong to their
+       provider view across switches, including pending launch locks and saved errors.
+       Behavioral regressions cover both analysis stages and submissions resolving
+       while away, after returning, and with an error. Full follow-up suite:
+       199 tests passed in 63.654s, including 24 page tests.
+       OPEN: gates 1 and 4 still need a real browser run per provider; no live-provider
+       traffic has been exercised. The probe stubs fetch and the DOM, so it proves the
+       state machine, not layout or real network timing.
 
 ---
 

@@ -27,6 +27,7 @@ from pathlib import Path
 
 from .api import APIError, dispatch, validate_method, allowed_methods
 from .decorrelation import ExtractError
+from .pages import app_page
 from .registry import RunRegistry, RunNotFoundError, RunStateError
 from .worker import JobBusyError
 from .reporting import PROVIDERS, archive_stale, render
@@ -206,6 +207,10 @@ def make_handler(results: Path, provider: str, registry=None):
             if path == "/__version":
                 self._send(version_token(results).encode("utf-8"), "text/plain; charset=utf-8")
                 return
+            if path in ("/app", "/app/"):
+                # The 3-stage console: a static shell that reads the API above it.
+                self._send(app_page().encode("utf-8"), "text/html; charset=utf-8")
+                return
             if path in ("/", "/index.html"):
                 try:
                     render(results, provider)  # rebuild live from disk
@@ -268,6 +273,7 @@ def main() -> int:
     url_host = f"[{args.host}]" if ":" in args.host else args.host
     url = f"http://{url_host}:{args.port}/"
     print(f"Live report for {PROVIDERS[args.provider]}  ->  {url}")
+    print(f"Scan console (harvest -> distinct -> de-correlate)  ->  {url}app")
     print(f"Serving {results}")
     print("The open tab reloads automatically when booked/ or extracts/ change.")
     print("Press Ctrl+C to stop.")

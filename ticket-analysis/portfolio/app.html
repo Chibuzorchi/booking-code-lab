@@ -1,0 +1,763 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Harvest → Distinct → De-correlate</title>
+<style>
+:root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#182b29;background:#f4f6f3;font-size:15px;color-scheme:light}
+*{box-sizing:border-box}body{margin:0}button,input,select,textarea{font:inherit}button,select{cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid #bb690c;outline-offset:3px}
+header{background:#123e35;color:#fff;padding:32px max(24px,calc((100vw - 1120px)/2))}
+.eyebrow{text-transform:uppercase;letter-spacing:.15em;font-size:12px;font-weight:700;color:#b4d5c5}
+h1{font-size:32px;margin:8px 0;font-weight:650;letter-spacing:-.5px}
+header p{color:#d1e1d8;max-width:760px;line-height:1.6;margin:0}
+main{max-width:1120px;margin:auto;padding:24px 24px 64px}
+.panel{background:#fff;border:1px solid #dce4dc;border-radius:14px;margin-bottom:18px;padding:22px}
+.panel[aria-disabled=true]{opacity:.62}
+h2{font-size:19px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+.step{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#123e35;color:#fff;font-size:13px;font-weight:700}
+fieldset{border:0;margin:0;padding:0}
+.grid{display:flex;gap:14px;align-items:end;flex-wrap:wrap;margin-top:14px}
+label{display:flex;flex-direction:column;gap:7px;font-size:13px;font-weight:600}
+label span{font-weight:400;color:#5c6c64;font-size:12px}
+input,select{padding:10px;border:1px solid #b8c8bd;border-radius:7px;background:#fff;color:#182b29;min-height:44px;min-width:120px}
+button{border:1px solid #b8c8bd;background:#f5f8f4;border-radius:7px;padding:10px 14px;color:#184b3e;min-height:44px;font-weight:600}
+button.go{background:#1c5344;border-color:#1c5344;color:#fff}
+button:disabled{opacity:.45;cursor:default}
+button.is-copied{background:#1d6b3a;color:#fff;border-color:#1d6b3a}
+button.is-copy-failed{background:#fbe6cf;color:#8a4a0c;border-color:#bb690c}
+.copy-fallback{display:block;margin-top:8px;width:100%;max-width:100%;font:14px/1.4 ui-monospace,monospace;padding:8px;border:1px solid #bb690c;border-radius:6px;background:#fff8ef;color:#182b29}
+summary .copy-fallback{grid-column:1/-1}
+.notice{margin:8px 0 0;color:#5c6c64;font-size:13px;line-height:1.6}
+.error{margin:10px 0 0;padding:11px 13px;border-radius:8px;background:#fdecec;border:1px solid #e3b3b3;color:#8a1c1c;font-size:13px;line-height:1.5}
+.ok{color:#1d6b3a;font-weight:600}.bad{color:#8a4a0c;font-weight:600}
+.facts{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0 0;padding:0;list-style:none}
+.facts li{background:#f4f7f3;border:1px solid #e0e8e0;border-radius:9px;padding:9px 12px;min-width:104px}
+.facts b{display:block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6c64;font-weight:700}
+.facts span{font-variant-numeric:tabular-nums;font-size:17px}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:18px 0 0;flex-wrap:wrap}
+.bar p{margin:0;font-size:13px;color:#5c6c64}
+.ticket{border:1px solid #dce4dc;border-radius:9px;margin-top:9px;overflow:hidden}
+.ticket summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(120px,1fr) 62px minmax(110px,150px) 90px 20px;gap:14px;padding:14px;align-items:center}
+.ticket summary::-webkit-details-marker{display:none}.ticket summary:hover{background:#f6f9f5}
+.ticket[open] summary{background:#edf4ed;border-bottom:1px solid #dce4dc}
+.ticket summary small{display:block;font-size:11px;color:#5c6c64;margin-bottom:4px}
+.ticket summary strong{font-family:ui-monospace,monospace;font-size:16px}
+.n{font-variant-numeric:tabular-nums}.chev{color:#527363}.ticket[open] .chev{transform:rotate(90deg)}
+.detail{padding:6px 14px 14px}.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;text-align:left;font-size:13px}
+th{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6c64;background:#f7f9f5}
+th,td{padding:10px 9px;border-bottom:1px solid #e7ece4;vertical-align:top}
+td small{display:block;color:#67796d;margin-top:4px}td.n{text-align:right}
+details.more{margin-top:16px}details.more>summary{cursor:pointer;font-weight:600;font-size:13px;color:#294d3d}
+noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin-bottom:18px}
+@media(max-width:700px){h1{font-size:26px}main{padding:16px 12px 48px}.panel{padding:16px}
+.ticket summary{grid-template-columns:1fr 86px;gap:10px}.chev{display:none}label{width:100%}input,select{width:100%}}
+</style></head><body>
+<header>
+  <div class="eyebrow">Local run console · paper only</div>
+  <h1>Harvest → Distinct → De-correlate</h1>
+  <p>Three stages against the local API on this machine. Nothing here places a bet or stakes money.
+  Every odds figure is the same basis the scan recorded and is labelled <b>recorded, not verified payout</b>.</p>
+</header>
+<main>
+<noscript>This console needs JavaScript: each stage is a request to the local API.</noscript>
+
+<section class="panel" id="s1" aria-labelledby="s1-h">
+  <h2 id="s1-h"><span class="step">1</span> Harvest</h2>
+  <p class="notice">Scans run as a separate worker process, one at a time per provider. Mutation depth is fixed at 3.</p>
+  <form id="scan-form">
+    <fieldset id="s1-fields">
+      <div class="grid">
+        <label>Provider<select id="provider"><option value="bet9ja">bet9ja</option><option value="sportybet">sportybet</option></select></label>
+        <label>Seed code<span id="seed-hint">7 characters, case kept</span><input id="seed" autocapitalize="off" autocomplete="off" spellcheck="false" required></label>
+        <label>Min odds<span>blank = no floor</span><input id="min_odds" type="number" min="0" step="any"></label>
+        <label>Max odds<span>blank = 350,000</span><input id="max_odds" type="number" min="0" step="any"></label>
+        <label>How many codes<span>blank/0 = uncapped</span><input id="want_count" type="number" min="0" step="1"></label>
+        <button class="go" id="s1-run" type="submit">Run scan</button>
+        <button id="s1-cancel" type="button" disabled>Cancel</button>
+      </div>
+      <details class="more"><summary>Advanced</summary>
+        <div class="grid"><label>Try budget<span>codes to attempt; blank = 25,000</span><input id="try_budget" type="number" min="1" step="1"></label></div>
+      </details>
+    </fieldset>
+  </form>
+  <p class="error" id="s1-error" hidden></p>
+  <p class="notice" id="s1-state" role="status" aria-live="polite">No run yet.</p>
+  <ul class="facts" id="s1-counters" hidden></ul>
+  <details class="more" id="s1-history"><summary>Earlier runs on this machine</summary>
+    <div class="grid">
+      <label>Run<select id="runs"><option value="">— none loaded —</option></select></label>
+      <button id="runs-refresh" type="button">Refresh list</button>
+      <button id="runs-load" type="button">Use this run</button>
+    </div>
+    <p class="notice" id="runs-note">Only a run that committed an extract can feed stages 2 and 3.</p>
+  </details>
+</section>
+
+<section class="panel" id="s2" aria-labelledby="s2-h" aria-disabled="true">
+  <h2 id="s2-h"><span class="step">2</span> Distinct codes</h2>
+  <p class="notice" id="s2-lock">Locked until a scan on this page has committed an extract.</p>
+  <fieldset id="s2-fields" disabled>
+    <div class="grid"><button class="go" id="s2-run" type="button">Find distinct codes</button></div>
+  </fieldset>
+  <p class="error" id="s2-error" hidden></p>
+  <ul class="facts" id="s2-facts" hidden></ul>
+  <p class="notice" id="s2-band" hidden></p>
+  <div class="bar" id="s2-bar" hidden><p id="s2-count"></p><button id="s2-copy-all" type="button">Copy all codes</button></div>
+  <div id="s2-cards"></div>
+  <details class="more" id="s2-more" hidden><summary>Most-reused game + option</summary><div class="scroll" id="s2-top"></div></details>
+</section>
+
+<section class="panel" id="s3" aria-labelledby="s3-h" aria-disabled="true">
+  <h2 id="s3-h"><span class="step">3</span> De-correlate</h2>
+  <p class="notice" id="s3-lock">Locked until stage 2 has a result for this run.</p>
+  <fieldset id="s3-fields" disabled>
+    <div class="grid">
+      <label>Max exposure<span>codes one selection may appear in; minimum 1</span><input id="max_exposure" type="number" min="1" step="1" value="1" required></label>
+      <label>Target count<span>blank = no limit</span><input id="target" type="number" min="1" step="1"></label>
+      <button class="go" id="s3-run" type="button">Select de-correlated set</button>
+    </div>
+  </fieldset>
+  <p class="notice">Stage 3 always runs on the run's full eligible pool, overlapping codes included — not on stage 2's distinct list.</p>
+  <p class="error" id="s3-error" hidden></p>
+  <ul class="facts" id="s3-facts" hidden></ul>
+  <p class="notice" id="s3-band" hidden></p>
+  <p class="notice" id="s3-subset" hidden></p>
+  <div class="bar" id="s3-bar" hidden><p id="s3-count"></p><button id="s3-copy-all" type="button">Copy selected codes</button></div>
+  <div id="s3-cards"></div>
+  <details class="more" id="s3-more" hidden><summary>Why codes were left out</summary><div class="scroll" id="s3-rejected"></div></details>
+</section>
+</main>
+<script>__COPY_JS__</script>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const POLL_MS = 3000;
+/* The states in which the registry still owns this provider's worker
+   (registry.active_run). cancelled_unresolved is NOT an end state -- it settles to
+   cancelled once the worker is gone -- so the page keeps polling it and keeps this
+   provider's launch disabled, because a second scan would be refused with 409. */
+const ACTIVE = new Set(['starting', 'running', 'cancelled_unresolved']);
+const CANCELLABLE = new Set(['starting', 'running']);
+const BASIS_LABEL = {parsed_leg_product: 'parsed leg product', site_displayed_odds: 'site displayed odds',
+                     verified_payout: 'verified payout'};
+
+const saved = Object.create(null);      // provider -> that provider's own view
+let provider = $('provider').value;     // the provider whose view is on screen
+let view = blankView();                 // the run and the two analyses now shown
+let gen = 0;                            // bumped whenever the selection changes
+let poller = null, pollGen = -1;
+let historyRequest = 0;
+const analysisRequest = {s2: null, s3: null};
+
+/* Every reply is checked against the generation it was issued under. Anything in
+   flight when the user picks another run or provider belongs to the selection they
+   left, so it drops itself instead of painting over the current one. */
+function invalidate() {
+  gen += 1;
+  stopPolling();
+  analysisRequest.s2 = analysisRequest.s3 = null;
+  $('s2-run').disabled = $('s3-run').disabled = false;
+}
+
+function node(tag, text, cls) {
+  const el = document.createElement(tag);
+  if (text !== undefined) el.textContent = text;
+  if (cls) el.className = cls;
+  return el;
+}
+const num = v => v == null ? '—' : Number(v).toLocaleString(undefined, {maximumFractionDigits: 2});
+
+function head(names) {
+  const row = node('tr'), group = node('thead');
+  for (const name of names) {
+    const cell = node('th', name);
+    cell.scope = 'col';
+    row.append(cell);
+  }
+  group.append(row);
+  return group;
+}
+
+function fail(id, message) {
+  const box = $(id);
+  box.textContent = message;
+  box.hidden = !message;
+}
+
+function facts(id, pairs) {
+  const box = $(id);
+  box.replaceChildren();
+  for (const [name, value] of pairs) {
+    const li = node('li');
+    li.append(node('b', name), node('span', String(value), 'n'));
+    box.append(li);
+  }
+  box.hidden = false;
+}
+
+/* Every call goes through here, so the API's error envelope is always shown. */
+async function api(method, path, body) {
+  const init = {method, cache: 'no-store', headers: {Accept: 'application/json'}};
+  if (body !== undefined) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+  let response;
+  try {
+    response = await fetch(path, init);
+  } catch (e) {
+    throw new Error('Cannot reach the local server — is it still running?');
+  }
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (e) {
+    throw new Error(`Unreadable reply from ${path} (HTTP ${response.status})`);
+  }
+  if (!response.ok) {
+    const error = (data && data.error) || {};
+    throw new Error(`${error.message || 'Request failed'} (HTTP ${response.status}${error.code ? ', ' + error.code : ''})`);
+  }
+  return data;
+}
+
+function bareCode(ticket) {
+  const raw = ticket.raw || {};
+  if (raw.code) return String(raw.code).trim();
+  const id = ticket.id || '';
+  return id.includes(':') ? id.slice(id.indexOf(':') + 1) : id;
+}
+
+function oddsOf(ticket, basis) {
+  const odds = ticket.odds || {};
+  if (basis === 'verified_payout') {
+    const payout = odds.payout_semantics || {};
+    return payout.status === 'verified' ? payout.multiplier : null;
+  }
+  return odds[basis] == null ? null : odds[basis];
+}
+
+function bandText(report) {
+  const basis = BASIS_LABEL[report.odds_basis] || report.odds_basis;
+  const upper = report.max_odds == null ? 'no ceiling' : num(report.max_odds);
+  return `Odds basis: ${basis} — ${report.odds_label}. Band ${num(report.min_odds)} to ${upper}, `
+       + `as recorded by the scan; the page cannot override it.`;
+}
+
+function lock(stage, locked, note) {
+  $(stage).setAttribute('aria-disabled', String(locked));
+  $(stage + '-fields').disabled = locked;
+  $(stage + '-lock').textContent = note;
+}
+
+/* ---------- stage 1: harvest ---------- */
+
+function seedHint() {
+  $('seed-hint').textContent = $('provider').value === 'bet9ja'
+    ? '7 characters, case kept' : '6 characters, upper-cased';
+}
+
+/* One view per provider. Switching providers never leaves the other provider's run,
+   poller or analysis on screen, and never mixes the two: the outgoing view is stashed
+   whole and the incoming one is repainted from its own remembered reports. */
+function blankView() { return {run: null, stage2: null, stage3: null, submission: null, error: null}; }
+
+function clearRun() {
+  view.run = null;
+  $('s1-counters').hidden = true;
+  $('s1-state').textContent = 'No run yet.';
+  $('s1-cancel').disabled = true;
+  $('s1-run').disabled = false;
+  fail('s1-error', '');
+  lock('s2', true, 'Locked until a scan on this page has committed an extract.');
+}
+
+function restore() {
+  const {run, stage2, stage3} = view;
+  clearRun();
+  clearAnalysis();
+  $('s2-run').disabled = false;
+  $('s3-run').disabled = false;
+  if (run) {
+    showRun(run);                 // repaint stage 1 from the remembered status...
+    if (ACTIVE.has(run.state)) startPolling();   // ...and poll again if it is still live
+  }
+  view.stage2 = stage2;           // showRun's run-change reset cleared these
+  view.stage3 = stage3;
+  if (stage2) {
+    renderDistinct(stage2);
+    lock('s3', false, stage3Note(stage2));
+  }
+  if (stage3) renderSelection(stage3);
+  if (view.submission) {
+    $('s1-state').textContent = 'Submitting scan…';
+    $('s1-run').disabled = true;
+    $('s1-cancel').disabled = true;
+    lock('s2', true, 'Waiting for scan submission.');
+  }
+  if (view.error) fail('s1-error', view.error);
+  $('runs-load').disabled = $('runs').disabled || Boolean(view.submission);
+}
+
+function switchProvider() {
+  saved[provider] = view;
+  invalidate();                   // drop replies for the provider being left
+  provider = $('provider').value;
+  view = saved[provider] || blankView();
+  seedHint();
+  restore();
+  refreshRuns();
+}
+
+function counterRows(status) {
+  const c = status.counters || {};
+  return [['State', status.state], ['Tried', num(c.tried)], ['Valid', num(c.found_ok)],
+          ['Qualifying', num(c.qualifying)], ['Simulated out', num(c.excluded_simulations)],
+          ['Unpriced', num(c.unpriced)]];
+}
+
+function showRun(status) {
+  // A different run means the analysis on screen describes something else. Drop both
+  // stages on any change of run id, whatever state the incoming run is in -- a run
+  // that arrives already succeeded must not inherit the previous run's results.
+  if (!view.run || view.run.run_id !== status.run_id) resetAnalysis();
+  view.run = status;
+  facts('s1-counters', counterRows(status));
+  const parts = [`Run ${status.run_id} (${status.provider}) is ${status.state}`];
+  if (status.stop_reason) parts.push(`stop reason: ${status.stop_reason}`);
+  if (status.error) parts.push(`error: ${status.error.message || status.error}`);
+  if (status.recovery_note) parts.push(status.recovery_note);
+  $('s1-state').textContent = parts.join(' · ') + '.';
+  $('s1-cancel').disabled = !CANCELLABLE.has(status.state);
+  $('s1-run').disabled = ACTIVE.has(status.state);
+
+  const ready = status.state === 'succeeded';
+  lock('s2', !ready, ready
+    ? `Run ${status.run_id} committed its extract. Stage 2 reads that exact snapshot.`
+    : `Locked until a run reaches "succeeded" with a committed extract; this one is ${status.state}.`);
+}
+
+function stopPolling() {
+  if (poller !== null) clearInterval(poller);
+  poller = null;
+}
+
+function startPolling() {
+  stopPolling();
+  poller = setInterval(tick, POLL_MS);
+  tick();                       // do not make the user wait one interval for the first update
+}
+
+/* One poll in flight at a time: a slow reply must not be overtaken by the next
+   interval. pollGen records whose poll is out, so a stale one cannot clear the flag
+   for the poll that replaced it. */
+async function tick() {
+  if (!view.run || pollGen === gen) return;
+  const mine = gen, run_id = view.run.run_id;
+  pollGen = mine;
+  try {
+    const status = await api('GET', '/api/scan/' + encodeURIComponent(run_id));
+    if (mine !== gen) return;
+    showRun(status);
+    if (!ACTIVE.has(status.state)) stopPolling();
+  } catch (e) {
+    if (mine !== gen) return;
+    stopPolling();
+    fail('s1-error', e.message);
+  } finally {
+    if (pollGen === mine) pollGen = -1;
+  }
+}
+
+function optionalNumber(id, name) {
+  const raw = $(id).value.trim();
+  if (raw === '') return undefined;              // let the API apply its own default
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new Error(`${name} must be a number`);
+  return value;
+}
+
+function optionalInteger(id, name, minimum) {
+  const value = optionalNumber(id, name);
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || value < minimum) throw new Error(`${name} must be a whole number >= ${minimum}`);
+  return value;
+}
+
+async function startScan(event) {
+  event.preventDefault();
+  if (view.submission || (view.run && ACTIVE.has(view.run.state))) return;
+  fail('s1-error', '');
+  let body;
+  try {
+    body = {provider: $('provider').value, seed: $('seed').value.trim()};
+    for (const [key, value] of Object.entries({
+      min_odds: optionalNumber('min_odds', 'Min odds'),
+      max_odds: optionalNumber('max_odds', 'Max odds'),
+      want_count: optionalInteger('want_count', 'How many codes', 0),
+      try_budget: optionalInteger('try_budget', 'Try budget', 1),
+    })) if (value !== undefined) body[key] = value;
+  } catch (e) {
+    fail('s1-error', e.message);
+    return;
+  }
+  invalidate();
+  // Submission has a server-side effect: keep its outcome in the originating
+  // provider view even when that provider is no longer on screen.
+  const owner = view, token = {};
+  owner.submission = token;
+  owner.error = null;
+  owner.run = owner.stage2 = owner.stage3 = null;
+  restore();
+  try {
+    const status = await api('POST', '/api/scan', body);
+    if (owner.submission !== token) return;
+    if (status.provider !== body.provider) throw new Error('Scan provider does not match the request.');
+    owner.run = status;
+  } catch (e) {
+    if (owner.submission !== token) return;
+    owner.error = e.message;
+  } finally {
+    if (owner.submission === token) {
+      owner.submission = null;
+      if (view === owner) {
+        invalidate();
+        restore();
+      }
+    }
+  }
+}
+
+async function cancelScan() {
+  if (!view.run) return;
+  fail('s1-error', '');
+  const mine = gen, run_id = view.run.run_id;
+  $('s1-cancel').disabled = true;
+  try {
+    // Cancellation can still be pending, so keep polling rather than trusting the 200.
+    const status = await api('POST', `/api/scan/${encodeURIComponent(run_id)}/cancel`, {});
+    if (mine !== gen || !view.run || view.run.run_id !== run_id) return;
+    showRun(status);
+    if (ACTIVE.has(status.state)) startPolling();
+  } catch (e) {
+    if (mine !== gen) return;
+    fail('s1-error', e.message);
+    if (view.run) $('s1-cancel').disabled = !CANCELLABLE.has(view.run.state);
+  }
+}
+
+async function refreshRuns() {
+  fail('s1-error', view.error || '');
+  const request = ++historyRequest, which = provider;
+  const select = $('runs');
+  select.replaceChildren(node('option', '— loading runs —'));
+  select.firstChild.value = '';
+  select.value = '';
+  select.disabled = true;
+  $('runs-load').disabled = true;
+  try {
+    const history = await api('GET', '/api/runs?provider=' + encodeURIComponent(which));
+    if (request !== historyRequest || which !== provider) return;
+    select.replaceChildren(node('option', history.runs.length ? '— pick a run —' : '— no runs yet —'));
+    select.firstChild.value = '';
+    for (const status of history.runs.filter(status => status.provider === which)) {
+      const option = node('option', `${status.run_id} · ${status.state} · seed ${(status.request || {}).seed || '?'}`);
+      option.value = status.run_id;
+      select.append(option);
+    }
+    select.disabled = false;
+    $('runs-load').disabled = Boolean(view.submission);
+    $('runs-note').textContent = `${history.runs.length} run(s) recorded for ${which}.`
+      + ' Only a run that committed an extract can feed stages 2 and 3.';
+  } catch (e) {
+    if (request === historyRequest && which === provider) fail('s1-error', e.message);
+  }
+}
+
+async function loadRun() {
+  if ($('runs').disabled || view.submission) return;
+  const run_id = $('runs').value;
+  if (!run_id) return;
+  fail('s1-error', '');
+  invalidate();                   // this selection supersedes anything still in flight
+  const mine = gen;
+  try {
+    const status = await api('GET', '/api/scan/' + encodeURIComponent(run_id));
+    if (mine !== gen) return;
+    if (status.provider !== provider) throw new Error('Run belongs to another provider. Refresh the history list.');
+    showRun(status);              // clears both stages, since the run id changed
+    if (ACTIVE.has(status.state)) startPolling();
+  } catch (e) {
+    if (mine !== gen) return;
+    fail('s1-error', e.message);
+  }
+}
+
+/* ---------- stage 2: distinct ---------- */
+
+const stage3Note = report => `Ready on the same eligible pool as stage 2 (${report.pool_size} code(s)).`;
+
+function clearAnalysis() {               // the DOM only; the remembered reports survive
+  $('s2-cards').replaceChildren();
+  for (const id of ['s2-facts', 's2-band', 's2-bar', 's2-more']) $(id).hidden = true;
+  fail('s2-error', '');
+  lock('s3', true, 'Locked until stage 2 has a result for this run.');
+  $('s3-cards').replaceChildren();
+  for (const id of ['s3-facts', 's3-band', 's3-bar', 's3-more', 's3-subset']) $(id).hidden = true;
+  fail('s3-error', '');
+}
+
+function resetAnalysis() {               // the analysis is gone, not just off screen
+  view.stage2 = null;
+  view.stage3 = null;
+  clearAnalysis();
+}
+
+function legTable(legs) {
+  const scroll = node('div', undefined, 'scroll'), table = node('table');
+  table.append(head(['Match / league', 'Market', 'Pick', 'Odds']));
+  const body = node('tbody');
+  for (const leg of legs) {
+    const row = node('tr'), match = node('td', leg.event || 'Unknown match');
+    match.append(node('small', [leg.league, leg.kickoff].filter(Boolean).join(' · ')));
+    row.append(match, node('td', leg.market || '—'), node('td', leg.pick || '—'), node('td', num(leg.odds), 'n'));
+    body.append(row);
+  }
+  table.append(body);
+  scroll.append(table);
+  return scroll;
+}
+
+function ticketCard(code, columns, detail) {
+  const card = node('details', undefined, 'ticket'), summary = node('summary');
+  const first = node('span');
+  first.append(node('small', 'Booking code'), node('strong', code));
+  summary.append(first);
+  for (const [name, value] of columns) {
+    const cell = node('span');
+    cell.append(node('small', name), node('span', value, 'n'));
+    summary.append(cell);
+  }
+  const button = node('button', 'Copy');
+  button.type = 'button';
+  button.addEventListener('click', event => {
+    event.preventDefault();          // the button sits inside <summary>
+    event.stopPropagation();
+    Copy.button(button, code, {label: 'Booking code to copy'});
+  });
+  summary.append(button, node('span', '›', 'chev'));
+  card.append(summary);
+  card.addEventListener('toggle', () => {
+    if (!card.open || card.dataset.loaded) return;
+    card.dataset.loaded = 'y';
+    const box = node('div', undefined, 'detail');
+    box.append(detail());
+    card.append(box);
+  });
+  return card;
+}
+
+function renderDistinct(report) {
+  const basis = report.odds_basis;
+  const codes = report.distinct.map(bareCode);
+  facts('s2-facts', [['In extract', num(report.input_count)], ['Eligible pool', num(report.pool_size)],
+                     ['Distinct', num(report.distinct_codes)], ['Overlapping', num(report.overlapping_codes)],
+                     ['Shared legs', num(report.shared_legs)]]);
+  $('s2-band').textContent = bandText(report);
+  $('s2-band').hidden = false;
+  $('s2-count').textContent = `${report.distinct_codes} code(s) share zero game+option with any other code in the pool`
+    + `, lowest odds first. ${report.excluded.length} extract row(s) were excluded from the pool.`;
+  $('s2-bar').hidden = false;
+  $('s2-copy-all').onclick = () => Copy.button($('s2-copy-all'), codes.join('\n'),
+    {copied: 'All copied', label: 'All distinct booking codes to copy'});
+  $('s2-copy-all').disabled = !codes.length;
+
+  const ordered = report.distinct.map((t, i) => [t, i]).sort((a, b) => {
+    const x = oddsOf(a[0], basis), y = oddsOf(b[0], basis);
+    if (x === y) return a[1] - b[1];
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return x - y;
+  });
+  const cards = $('s2-cards');
+  cards.replaceChildren();
+  for (const [ticket] of ordered) {
+    cards.append(ticketCard(bareCode(ticket),
+      [['Legs', String(ticket.num_legs)], ['Odds', num(oddsOf(ticket, basis))]],
+      () => legTable(ticket.legs)));
+  }
+
+  const top = node('table');
+  top.append(head(['Game + option', 'In codes']));
+  const body = node('tbody');
+  for (const row of report.top_legs) {
+    const tr = node('tr');
+    tr.append(node('td', row.leg), node('td', String(row.in_codes), 'n'));
+    body.append(tr);
+  }
+  top.append(body);
+  $('s2-top').replaceChildren(top);
+  $('s2-more').hidden = !report.top_legs.length;
+}
+
+async function findDistinct() {
+  if (!view.run || analysisRequest.s2) return;
+  fail('s2-error', '');
+  const mine = gen, run_id = view.run.run_id;
+  const request = {};
+  analysisRequest.s2 = request;
+  $('s2-run').disabled = true;
+  try {
+    const report = await api('POST', '/api/distinct', {run_id});
+    // A report for a run the user has moved off is not this page's state any more.
+    if (mine !== gen || !view.run || view.run.run_id !== run_id) return;
+    view.stage2 = report;
+    renderDistinct(report);
+    lock('s3', false, stage3Note(report));
+  } catch (e) {
+    if (mine === gen) fail('s2-error', e.message);
+  } finally {
+    if (analysisRequest.s2 === request) {
+      analysisRequest.s2 = null;
+      $('s2-run').disabled = false;
+    }
+  }
+}
+
+/* ---------- stage 3: de-correlate ---------- */
+
+function sharedTable(rows) {
+  const scroll = node('div', undefined, 'scroll'), table = node('table');
+  table.append(head(['Shared game + option', 'Market', 'Pick', 'Also in']));
+  const body = node('tbody');
+  for (const row of rows) {
+    const tr = node('tr');
+    tr.append(node('td', row.event || '—'), node('td', row.market || '—'), node('td', row.pick || '—'),
+              node('td', (row.shared_with_selected || row.at_capacity_with || []).join(', ') || '—'));
+    body.append(tr);
+  }
+  table.append(body);
+  scroll.append(table);
+  return scroll;
+}
+
+/* The F2b invariant, checked in front of the user rather than asserted in prose. */
+function subsetCheck(report) {
+  const box = $('s3-subset');
+  const selection = report.selection, stage2 = view.stage2;
+  if (!stage2 || stage2.run_id !== report.run_id || selection.target !== null || selection.max_exposure !== 1) {
+    box.hidden = true;
+    return;
+  }
+  const selected = new Set(selection.selected_codes);
+  const missing = stage2.distinct.map(bareCode).filter(code => !selected.has(code));
+  box.replaceChildren(node('span', 'Stage-2 check: '),
+    node('span', missing.length
+      ? `${missing.length} of ${stage2.distinct_codes} fully-distinct code(s) are missing from this cap-1 selection: `
+        + missing.slice(0, 10).join(', ')
+      : `all ${stage2.distinct_codes} fully-distinct code(s) are inside this cap-1 selection `
+        + `(${selection.selected_count} selected; counts need not be equal).`,
+      missing.length ? 'bad' : 'ok'));
+  box.hidden = false;
+}
+
+function renderSelection(report) {
+  const selection = report.selection, codes = selection.selected_codes;
+  const range = selection.odds_range || {};
+  facts('s3-facts', [['Full pool', num(report.pool_size)], ['Selected', num(selection.selected_count)],
+                     ['Left out', num(selection.rejected_count)],
+                     ['Cap', num(selection.max_exposure)],
+                     ['Realized max', num(selection.realized_max_exposure)],
+                     ['Target', selection.target == null ? 'none' : num(selection.target)]]);
+  $('s3-band').textContent = `${bandText(report)} Selected odds ${num(range.min)} to ${num(range.max)} `
+    + `(median ${num(range.median)}; ${num(range.priced_codes)} priced, ${num(range.unpriced_codes)} unpriced).`;
+  $('s3-band').hidden = false;
+  $('s3-count').textContent = selection.uniqueness_buckets.map(b => `${b.code_count} ${b.tier}`).join(' · ')
+    || 'No codes selected.';
+  $('s3-bar').hidden = false;
+  $('s3-copy-all').onclick = () => Copy.button($('s3-copy-all'), codes.join('\n'),
+    {copied: 'All copied', label: 'All selected booking codes to copy'});
+  $('s3-copy-all').disabled = !codes.length;
+
+  const cards = $('s3-cards');
+  cards.replaceChildren();
+  for (const row of selection.selected) {
+    cards.append(ticketCard(row.code,
+      [['Legs', String(row.num_legs)], ['Odds', num(row.parsed_leg_product)],
+       ['Shared', String(row.shared_leg_count)]],
+      () => row.shared_legs.length ? sharedTable(row.shared_legs)
+        : node('p', 'No game+option in this code is shared with another selected code.', 'notice')));
+  }
+
+  const table = node('table');
+  table.append(head(['Code', 'Reason', 'Blocked by']));
+  const body = node('tbody');
+  for (const row of selection.rejected) {
+    const tr = node('tr'), why = node('td');
+    why.append(node('span', row.reason === 'target_reached' ? 'target reached' : 'exposure cap'));
+    const blocking = (row.blocking || []).map(b =>
+      `${b.event} :: ${b.market} = ${b.pick} (full with ${(b.at_capacity_with || []).join(', ')})`);
+    tr.append(node('td', row.code), why, node('td', blocking.join(' · ') || '—'));
+    body.append(tr);
+  }
+  table.append(body);
+  $('s3-rejected').replaceChildren(table);
+  $('s3-more').hidden = !selection.rejected.length;
+  subsetCheck(report);
+}
+
+async function decorrelate() {
+  if (!view.run || analysisRequest.s3) return;
+  fail('s3-error', '');
+  const run_id = view.run.run_id, body = {run_id};
+  const exposure = Number($('max_exposure').value);
+  if (!Number.isInteger(exposure) || exposure < 1) {      // the API refuses it too
+    fail('s3-error', 'Max exposure must be a whole number of at least 1 (1 = fully independent).');
+    return;
+  }
+  body.max_exposure = exposure;
+  const target = $('target').value.trim();
+  if (target !== '') {
+    const wanted = Number(target);
+    if (!Number.isInteger(wanted) || wanted < 1) {
+      fail('s3-error', 'Target count must be a whole number of at least 1, or blank for no limit.');
+      return;
+    }
+    body.target = wanted;
+  }
+  const mine = gen;
+  const request = {};
+  analysisRequest.s3 = request;
+  $('s3-run').disabled = true;
+  try {
+    const report = await api('POST', '/api/decorrelate', body);
+    if (mine !== gen || !view.run || view.run.run_id !== run_id) return;
+    view.stage3 = report;
+    renderSelection(report);
+  } catch (e) {
+    if (mine === gen) fail('s3-error', e.message);
+  } finally {
+    if (analysisRequest.s3 === request) {
+      analysisRequest.s3 = null;
+      $('s3-run').disabled = false;
+    }
+  }
+}
+
+/* ---------- wiring ---------- */
+
+$('scan-form').addEventListener('submit', startScan);
+$('s1-cancel').addEventListener('click', cancelScan);
+$('provider').addEventListener('change', switchProvider);
+$('runs-refresh').addEventListener('click', refreshRuns);
+$('runs-load').addEventListener('click', loadRun);
+$('s2-run').addEventListener('click', findDistinct);
+$('s3-run').addEventListener('click', decorrelate);
+$('max_exposure').addEventListener('input', () => {
+  if (Number($('max_exposure').value) < 1) $('max_exposure').value = '1';
+});
+window.addEventListener('beforeunload', stopPolling);
+seedHint();
+refreshRuns();
+</script></body></html>
