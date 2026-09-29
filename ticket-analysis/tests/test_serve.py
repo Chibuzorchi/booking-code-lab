@@ -36,6 +36,16 @@ class APITests(RegistryTestBase):
         finally:
             conn.close()
 
+    def raw(self, method, path, headers=None):
+        """Unparsed reply, for the HTML routes."""
+        conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
+        try:
+            conn.request(method, path, None, headers or {})
+            response = conn.getresponse()
+            return response.status, response.getheader('Content-Type'), response.read()
+        finally:
+            conn.close()
+
     def start(self, provider='sportybet'):
         status, run = self.request('POST', '/api/scan', {'provider': provider, 'seed': 'ABC123' if provider == 'sportybet' else 'AbC1234'})
         self.assertEqual(status, 202, run)
@@ -136,7 +146,7 @@ class APITests(RegistryTestBase):
         (self.workspace / 'private.txt').write_text('private codes')
         with patch('portfolio.serve.render') as render:
             for method in ('GET', 'HEAD'):
-                for path in ('/', '/__version', '/private.txt', '/scripts/'):
+                for path in ('/', '/app', '/__version', '/private.txt', '/scripts/'):
                     for headers in ({'Host': 'attacker.test'},
                                     {'Origin': 'http://attacker.test'},
                                     {'Sec-Fetch-Site': 'cross-site'}):
@@ -226,6 +236,22 @@ class APITests(RegistryTestBase):
                 self.assertIn(b'__version', response.read())
         finally:
             conn.close()
+
+    def test_console_page_serves_the_one_copy_helper(self):
+        status, kind, body = self.raw('GET', '/app')
+        self.assertEqual(status, 200)
+        self.assertEqual(kind, 'text/html; charset=utf-8')
+        page = body.decode('utf-8')
+        self.assertEqual(page.count('const Copy = (() =>'), 1)
+        self.assertNotIn('__COPY_JS__', page)
+        for route in ('/api/scan', '/api/distinct', '/api/decorrelate'):
+            self.assertIn(route, page)
+        self.assertEqual(self.raw('GET', '/app/')[0], 200)
+        self.assertEqual(self.raw('HEAD', '/app'), (200, kind, b''))
+        # the console is a static shell: serving it never rebuilds the legacy report
+        with patch('portfolio.serve.render') as render:
+            self.assertEqual(self.raw('GET', '/app')[0], 200)
+            render.assert_not_called()
 
     def test_integrity_and_analysis_failures_are_not_success(self):
         run_id = self.start()

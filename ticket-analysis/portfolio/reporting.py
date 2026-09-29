@@ -10,6 +10,7 @@ import tempfile
 from urllib.parse import quote
 
 from .analysis import label, load_inputs, normalize_ticket, number, read_json
+from .pages import inline_copy_js
 from .selection import select_subset
 from .contracts import odds_contract
 
@@ -371,7 +372,9 @@ def render(results: Path, provider: str):
     # Escaping '<' prevents an API-supplied </script> from escaping the JSON element.
     payload = json.dumps(catalog, ensure_ascii=True, allow_nan=False).replace("<", "\\u003c")
     template = Path(__file__).with_name("reporting.html").read_text(encoding="utf-8")
-    page = template.replace("__TITLE__", PROVIDERS[provider]).replace("__CATALOG__", payload)
+    # The catalog payload is substituted last, so scanned data can never be
+    # re-scanned for a placeholder of its own.
+    page = inline_copy_js(template.replace("__TITLE__", PROVIDERS[provider])).replace("__CATALOG__", payload)
     atomic_write(results / "index.html", page)
     summaries = results / "summaries"
     summaries.mkdir(exist_ok=True)

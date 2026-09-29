@@ -9,7 +9,9 @@ python3 -m portfolio.serve --provider bet9ja --no-open
 The existing report remains at `/`. `--provider` chooses that report; the API
 supports both providers. `--results` changes only the report source. API runs use
 `results/runs/<provider>/<run_id>/` under the repository workspace.
-F7 will add the interactive page.
+The three-stage console is at `/app` (F7): a static shell that calls only the
+routes below, so every figure it shows comes from this API. It holds no run data
+and can be served before any scan exists.
 
 The server permits only loopback binding (`127.0.0.1`, `::1`, or `localhost`). All HTTP
 requests (including report, version, and static files) also require a loopback peer and local Host with the server's port.
@@ -26,6 +28,7 @@ There is no CORS opt-in. No endpoint places a paid bet.
 | GET | `/api/runs?provider=sportybet` | `{ "runs": [...] }`, newest first; provider optional |
 | POST | `/api/distinct` | `{ "run_id": "..." }`; pool metadata, exclusions, counts and distinct/overlapping tickets |
 | POST | `/api/decorrelate` | `{ "run_id": "...", "max_exposure": 1, "target": 10 }`; full-pool metadata and selection/rejection explanations |
+| GET | `/app` | The three-stage console page (HTML); loopback-guarded like every other route |
 
 Scan fields:
 
