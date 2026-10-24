@@ -57,9 +57,12 @@ class PopulationAuditTests(unittest.TestCase):
         return base
 
     def _ticket(self, code, selections, **overrides):
+        raw_path = self.workspace / "raw" / f"{code}.json"
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text("{}", encoding="utf-8")
         base = {"code": code, "ok": True, "provider": "bet9ja", "num_legs": len(selections),
                 "selections": selections, "retrieval_completeness": "complete",
-                "bet_type": "0", "raw_response_path": f"/tmp/{code}.json"}
+                "bet_type": "0", "raw_response_path": str(raw_path)}
         base.update(overrides)
         return base
 
@@ -148,6 +151,69 @@ class PopulationAuditTests(unittest.TestCase):
         run_id = self._make_run("bet9ja", "run-bet9ja-20261023-000001-dddddddd", extract)
         report = audit_run(self.registry, run_id)
         self.assertEqual(len(report["raw_response_missing"]), 1)
+        self.assertEqual(report["raw_response_missing"][0]["reason"], "path_absent")
+
+    def test_raw_response_nonexistent_file_recorded_as_missing(self):
+        # F9_IMPLEMENTATION_REVIEW.md R06: a nonempty but nonexistent path
+        # must be flagged, not taken on faith.
+        ticket = self._ticket("Q1", [self._selection()])
+        ticket["raw_response_path"] = str(self.workspace / "raw" / "does-not-exist.json")
+        extract = {"provider": "bet9ja", "odds_basis": "parsed_leg_product", "qualifying": [ticket]}
+        run_id = self._make_run("bet9ja", "run-bet9ja-20261023-000001-eeeeeeee", extract)
+        report = audit_run(self.registry, run_id)
+        self.assertEqual(len(report["raw_response_missing"]), 1)
+        self.assertEqual(report["raw_response_missing"][0]["reason"], "file_not_found")
+
+    def test_raw_response_existing_file_not_flagged_missing(self):
+        ticket = self._ticket("Q1", [self._selection()])  # _ticket writes a real file
+        extract = {"provider": "bet9ja", "odds_basis": "parsed_leg_product", "qualifying": [ticket]}
+        run_id = self._make_run("bet9ja", "run-bet9ja-20261023-000001-ffffffff", extract)
+        report = audit_run(self.registry, run_id)
+        self.assertEqual(report["raw_response_missing"], [])
+
+    def test_fixture_metadata_conflict_detected_across_markets(self):
+        # R07: same native event, different market/kickoff metadata --
+        # must surface as a fixture-level conflict even with no leg-identity
+        # collision.
+        leg_a = self._selection(market="1X2", pick="1", market_id="1", outcome_id="2",
+                                 kickoff="2026-10-25 15:45:00")
+        leg_b = self._selection(market="Over/Under", pick="Over", market_id="9", outcome_id="8",
+                                 kickoff="2026-10-25 16:00:00")
+        extract = {"provider": "bet9ja", "odds_basis": "parsed_leg_product",
+                   "qualifying": [self._ticket("Q1", [leg_a]), self._ticket("Q2", [leg_b])]}
+        run_id = self._make_run("bet9ja", "run-bet9ja-20261023-000002-aaaaaaaa", extract)
+        report = audit_run(self.registry, run_id)
+        self.assertEqual(report["conflicting_observations"], [])
+        self.assertEqual(len(report["conflicting_fixture_observations"]), 1)
+
+    def test_duplicate_ticket_code_identical_content_not_flagged_conflicting(self):
+        leg = self._selection()
+        ticket_a = self._ticket("Q1", [leg])
+        ticket_b = dict(ticket_a)
+        extract = {"provider": "bet9ja", "odds_basis": "parsed_leg_product",
+                   "qualifying": [ticket_a, ticket_b]}
+        run_id = self._make_run("bet9ja", "run-bet9ja-20261023-000002-bbbbbbbb", extract)
+        report = audit_run(self.registry, run_id)
+        self.assertEqual(len(report["duplicate_ticket_codes"]), 1)
+        self.assertEqual(report["conflicting_ticket_codes"], [])
+
+    def test_same_code_different_content_flagged_conflicting(self):
+        ticket_a = self._ticket("Q1", [self._selection(pick="1")])
+        ticket_b = self._ticket("Q1", [self._selection(pick="2")])
+        extract = {"provider": "bet9ja", "odds_basis": "parsed_leg_product",
+                   "qualifying": [ticket_a, ticket_b]}
+        run_id = self._make_run("bet9ja", "run-bet9ja-20261023-000002-cccccccc", extract)
+        report = audit_run(self.registry, run_id)
+        self.assertEqual(report["duplicate_ticket_codes"], [])
+        self.assertEqual(len(report["conflicting_ticket_codes"]), 1)
+
+    def test_malformed_selections_container_recorded_explicitly(self):
+        ticket = self._ticket("Q1", [])
+        ticket["selections"] = "not-a-list"
+        extract = {"provider": "bet9ja", "odds_basis": "parsed_leg_product", "qualifying": [ticket]}
+        run_id = self._make_run("bet9ja", "run-bet9ja-20261023-000002-dddddddd", extract)
+        report = audit_run(self.registry, run_id)
+        self.assertIn("selections_not_list", report["missing_fields"])
 
 
 if __name__ == "__main__":

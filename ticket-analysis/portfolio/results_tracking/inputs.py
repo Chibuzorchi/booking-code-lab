@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter, defaultdict
+from pathlib import Path
 
 from ..contracts import identity
 
@@ -20,6 +21,20 @@ REQUIRED_SELECTION_FIELDS = ("event", "league", "market", "pick", "kickoff", "sp
 
 class PopulationAuditError(ValueError):
     """The committed extract fails a structural precondition for auditing."""
+
+
+def _raw_response_status(path_value):
+    """None when real bytes are available at path_value; otherwise a short
+    reason. A nonempty path is not taken on faith -- the file must actually
+    exist, since availability at audit time is distinct from (and a
+    precondition for) preserving it for replay."""
+    if not path_value:
+        return "path_absent"
+    try:
+        exists = Path(path_value).is_file()
+    except (OSError, ValueError):
+        return "path_absent"
+    return None if exists else "file_not_found"
 
 
 def _kickoff_timezone_bucket(kickoff):
@@ -76,6 +91,8 @@ def audit_run(registry, run_id, expected_provider=None, expected_rows=None):
     kickoffs_by_timezone = defaultdict(list)
     raw_response_missing = []
     observations_by_leg = defaultdict(set)
+    observations_by_event = defaultdict(set)
+    ticket_codes_seen = defaultdict(list)
 
     for index, ticket in enumerate(qualifying):
         row_id = f"{digest}:{index}"
@@ -84,10 +101,20 @@ def audit_run(registry, run_id, expected_provider=None, expected_rows=None):
             continue
         completeness[ticket.get("retrieval_completeness")] += 1
         bet_types[ticket.get("bet_type")] += 1
-        if not ticket.get("raw_response_path"):
-            raw_response_missing.append(row_id)
-        selections = ticket.get("selections")
-        selections = selections if isinstance(selections, list) else []
+        raw_status = _raw_response_status(ticket.get("raw_response_path"))
+        if raw_status is not None:
+            raw_response_missing.append({"row_id": row_id, "reason": raw_status})
+        code = ticket.get("code")
+        if code:
+            ticket_content_hash = hashlib.sha256(
+                json.dumps(ticket, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+            ticket_codes_seen[code].append((row_id, ticket_content_hash))
+        raw_selections = ticket.get("selections")
+        if isinstance(raw_selections, list):
+            selections = raw_selections
+        else:
+            selections = []
+            missing_field_rows["selections_not_list"].add(row_id)
         for selection in selections:
             if not isinstance(selection, dict):
                 missing_field_rows["selection_not_object"].add(row_id)
@@ -107,6 +134,9 @@ def audit_run(registry, run_id, expected_provider=None, expected_rows=None):
             identity_modes[mode] += 1
             if event_identity is not None:
                 fixtures.add(tuple(event_identity))
+                observed_fixture = (selection.get("event"), selection.get("league"), kickoff,
+                                     selection.get("sport"))
+                observations_by_event[tuple(event_identity)].add(observed_fixture)
             if leg_identity is not None:
                 observed = (selection.get("event"), selection.get("league"), kickoff,
                             selection.get("sport"), selection.get("market"), selection.get("pick"))
@@ -119,6 +149,21 @@ def audit_run(registry, run_id, expected_provider=None, expected_rows=None):
          "observations": [list(o) for o in sorted(obs, key=lambda o: tuple(str(v) for v in o))]}
         for key, obs in observations_by_leg.items() if len(obs) > 1
     ]
+    conflicting_fixture_observations = [
+        {"event_identity": list(key),
+         "observations": [list(o) for o in sorted(obs, key=lambda o: tuple(str(v) for v in o))]}
+        for key, obs in observations_by_event.items() if len(obs) > 1
+    ]
+    duplicate_ticket_codes = []
+    conflicting_ticket_codes = []
+    for code, entries in ticket_codes_seen.items():
+        if len(entries) <= 1:
+            continue
+        row_ids = [row_id for row_id, _ in entries]
+        if len({content_hash for _, content_hash in entries}) == 1:
+            duplicate_ticket_codes.append({"code": code, "row_ids": row_ids})
+        else:
+            conflicting_ticket_codes.append({"code": code, "row_ids": row_ids})
 
     return {
         "run_id": run_id,
@@ -144,4 +189,12 @@ def audit_run(registry, run_id, expected_provider=None, expected_rows=None):
         "unique_fixtures": len(fixtures),
         "raw_response_missing": raw_response_missing,
         "conflicting_observations": conflicting_observations,
+        "conflicting_fixture_observations": conflicting_fixture_observations,
+        "duplicate_ticket_codes": duplicate_ticket_codes,
+        "conflicting_ticket_codes": conflicting_ticket_codes,
+        # Not JSON-serializable; the already-verified raw bytes read above,
+        # for a caller (the CLI) to preserve to disk without reopening the
+        # source path. Callers must pop this key before writing the rest of
+        # this dict as JSON.
+        "_raw_extract_bytes": raw,
     }

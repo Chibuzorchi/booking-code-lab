@@ -23,6 +23,17 @@ def write_json(path, value):
         stream.write("\n")
 
 
+def write_json_atomic(path, value):
+    """Writes to a sibling temp file then renames into place, so a reader
+    never observes a partially written file at `path` -- the manifest is
+    the completion marker, so it must appear whole or not at all."""
+    tmp_path = path.with_name(path.name + ".tmp")
+    with tmp_path.open("x", encoding="utf-8") as stream:
+        json.dump(value, stream, indent=2, ensure_ascii=False, allow_nan=False)
+        stream.write("\n")
+    tmp_path.replace(path)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Freeze and inventory retained run extracts; no outcome or settlement claim.")
@@ -48,22 +59,36 @@ def main(argv=None):
             reports.append(audit_run(registry, run_id, expected_provider, expected_rows))
         generated_at = datetime.now(timezone.utc).isoformat()
         args.output.mkdir(parents=True, exist_ok=False)
+        extracts_dir = args.output / "extracts"
+        extracts_dir.mkdir()
         for report in reports:
+            raw_extract_bytes = report.pop("_raw_extract_bytes")
+            extract_path = extracts_dir / f"{report['run_id']}.extract.json"
+            extract_path.write_bytes(raw_extract_bytes)
+            if hashlib.sha256(extract_path.read_bytes()).hexdigest() != report["extract_sha256"]:
+                raise PopulationAuditError(
+                    f"run {report['run_id']}: preserved extract bytes do not match the "
+                    "verified digest")
+            report["preserved_extract_path"] = str(extract_path.relative_to(args.output))
             write_json(args.output / f"{report['run_id']}.json", report)
         summary = {
             "generated_at": generated_at,
             "runs": [{"run_id": r["run_id"], "provider": r["provider"], "row_count": r["row_count"],
                       "extract_sha256": r["extract_sha256"], "unique_fixtures": r["unique_fixtures"],
                       "identity_modes": r["identity_modes"],
+                      "preserved_extract_path": r["preserved_extract_path"],
                       "conflicting_observation_count": len(r["conflicting_observations"]),
+                      "conflicting_fixture_observation_count": len(r["conflicting_fixture_observations"]),
+                      "duplicate_ticket_code_count": len(r["duplicate_ticket_codes"]),
+                      "conflicting_ticket_code_count": len(r["conflicting_ticket_codes"]),
                       "raw_response_missing_count": len(r["raw_response_missing"])}
                      for r in reports],
         }
         write_json(args.output / "summary.json", summary)
-        write_json(args.output / "manifest.json", {
+        write_json_atomic(args.output / "manifest.json", {
             "generated_at": generated_at,
-            "files": {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                      for p in sorted(args.output.iterdir()) if p.is_file()},
+            "files": {str(p.relative_to(args.output)): hashlib.sha256(p.read_bytes()).hexdigest()
+                      for p in sorted(args.output.rglob("*")) if p.is_file()},
         })
         for r in reports:
             print(f"{r['run_id']} ({r['provider']}): {r['row_count']} retained rows, "
