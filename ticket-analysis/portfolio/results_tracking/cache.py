@@ -263,12 +263,21 @@ class FixtureCache:
         jobs.py's documented "abandoned, not killed" behavior) holds this
         key's lock for that long; a same-key retry then queues behind it
         rather than racing it, which is the single-flight guarantee this
-        exists to provide, not a separate bug."""
+        exists to provide, not a separate bug.
+
+        A refresh that returns a non-terminal result never overwrites a
+        previously stored terminal entry for the same key (F9_STEP5_REVIEW.md
+        S5-09): once a response has actually confirmed finished fixtures,
+        a later no-result/pending response for the same key is a refresh
+        hiccup, not new evidence that the earlier facts stopped being true,
+        so the stale terminal entry is kept and returned instead."""
         with _flock_path(self._lock_path(key)):
             entry = self._get_locked(key)
             if entry is not None and not is_stale(entry):
                 return entry
             raw_bytes, all_terminal = fetch()
+            if entry is not None and entry.all_terminal and not all_terminal:
+                return entry
             return self._put_locked(key, raw_bytes, all_terminal=all_terminal)
 
 

@@ -261,6 +261,35 @@ class FixtureCacheTests(unittest.TestCase):
                 cache.get_or_fetch(_key(), _fetch)
             self.assertIsNone(cache.get(_key()))
 
+    def test_a_non_terminal_refresh_never_overwrites_a_terminal_entry(self):
+        # S5-09: once a response has actually confirmed finished fixtures,
+        # a later no-result/pending refresh for the same key must not
+        # erase that validated fact -- the stale terminal entry is kept.
+        with TemporaryDirectory() as tmp:
+            cache = FixtureCache(Path(tmp))
+            cache.put(_key(), b"[finished]", all_terminal=True)
+
+            def _fetch():
+                return b"[]", False
+
+            entry = cache.get_or_fetch(_key(), _fetch, is_stale=lambda e: True)
+            self.assertEqual(entry.raw_bytes, b"[finished]")
+            self.assertTrue(entry.all_terminal)
+            self.assertEqual(cache.get(_key()).raw_bytes, b"[finished]")
+
+    def test_a_terminal_refresh_does_overwrite_a_stale_terminal_entry(self):
+        # The S5-09 guard only blocks a *regression* (terminal -> not);
+        # a genuinely new terminal result for the same key still writes.
+        with TemporaryDirectory() as tmp:
+            cache = FixtureCache(Path(tmp))
+            cache.put(_key(), b"[old]", all_terminal=True)
+
+            def _fetch():
+                return b"[new]", True
+
+            entry = cache.get_or_fetch(_key(), _fetch, is_stale=lambda e: True)
+            self.assertEqual(entry.raw_bytes, b"[new]")
+
 
 class QuotaTrackerTests(unittest.TestCase):
     def test_fresh_tracker_has_full_budget(self):

@@ -354,7 +354,13 @@ def _make_fetch_one(client, cache: FixtureCache, quota: QuotaTracker) -> Callabl
                             for item in filter_in_scope(raw_fixtures)]
             except ApiFootballError as exc:
                 raise FatalTaskError(str(exc)) from exc
-            all_terminal = all(f.is_finished for f in fixtures) if fixtures else True
+            # An empty response (no in-scope fixtures returned for this
+            # date) is no-result evidence, not a confirmed final state --
+            # it means "nothing published/in-scope yet", which can still
+            # change, so it gets the short pending refresh window rather
+            # than the 24h terminal one (F9_STEP5_REVIEW.md S5-09). Only a
+            # response that actually names finished fixtures is terminal.
+            all_terminal = bool(fixtures) and all(f.is_finished for f in fixtures)
             return json.dumps(raw_fixtures).encode("utf-8"), all_terminal
 
         cache.get_or_fetch(key, _fetch)

@@ -15,11 +15,12 @@ from tempfile import TemporaryDirectory
 
 from portfolio.results_tracking import __main__ as results_cli
 from portfolio.results_tracking.jobs import JobState, JobStore
+from portfolio.results_tracking.cache import FixtureCache
 from portfolio.results_tracking.results_api import (
     _ABANDONED_JOB_AFTER_SECONDS,
     ReportNotFoundError, ResultsApiConfig, ResultsApiError, _build_audit_rows,
-    _commit_publication, _dates_needed, _default_client_factory, _fixture_to_evidence_dict,
-    _ticket_to_evidence, cancel_job,
+    _cache_key_for_date, _commit_publication, _dates_needed, _default_client_factory,
+    _fixture_to_evidence_dict, _ticket_to_evidence, cancel_job,
     compute_config_digest, get_latest_report, list_codes, load_identity_evidence,
     load_population, publish_revision, submit_evaluation,
 )
@@ -430,6 +431,28 @@ class SubmitEvaluationTests(unittest.TestCase):
             # late to stop it (jobs.py's own cancellation contract).
             report = get_latest_report(config, "run-1")
             self.assertEqual(final.result["revision_id"], report["revision_id"])
+
+    def test_an_empty_fixture_response_is_cached_as_pending_not_terminal(self):
+        # S5-09 repro: a date with no in-scope fixtures returned yet must
+        # get the short pending refresh window, not the 24h terminal one
+        # -- an empty response is "nothing published yet", not a confirmed
+        # final state.
+        with TemporaryDirectory() as tmp:
+            registry = FakeRegistry(_extract([
+                _ticket("C1", "Arsenal - Chelsea", "England - Premier League", "1X2", "1",
+                        "2026-10-23T15:00:00"),
+            ]))
+            config = ResultsApiConfig(root=Path(tmp) / "results_api")
+            job_store = JobStore(Path(tmp) / "jobs")
+            client = FakeApiFootballClient({"2026-10-23": []})
+
+            record = submit_evaluation(registry, config, job_store, "run-1", client_factory=lambda: client)
+            _wait_for_terminal(job_store, record.job_id)
+
+            cache = FixtureCache(config.cache_root())
+            entry = cache.get(_cache_key_for_date("2026-10-23"))
+            self.assertIsNotNone(entry)
+            self.assertFalse(entry.all_terminal)
 
     def test_no_dates_needed_still_publishes_a_report_for_every_row(self):
         with TemporaryDirectory() as tmp:
