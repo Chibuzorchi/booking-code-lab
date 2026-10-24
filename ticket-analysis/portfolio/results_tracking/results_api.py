@@ -19,8 +19,12 @@ reach both.
 
 The population (audit_rows for evaluate_run) is read directly from
 registry.committed_extract_snapshot() -- no on-disk audit-dir artifact is
-required; evaluate_run only uses audit_rows as a row_id membership set, so
-the raw ticket dict itself serves that purpose unchanged.
+required. evaluate_run binds each supplied ticket to its audited original
+selections field-for-field, not just row_id membership, so
+_build_audit_rows() reconstructs that exact shape; a malformed row (not a
+dict) still gets an audit_rows entry (so the denominator never silently
+shrinks) but is never supplied as a ticket, surfacing instead through
+evaluate_run's own not_supplied_in_evidence reconciliation.
 
 No client-supplied keys, paths, URLs, rule overrides or unbounded budgets:
 callers choose only run_id/refresh/allow_partial: everything else (cache
@@ -141,8 +145,14 @@ def load_population(registry, run_id: str):
     qualifying = data.get("qualifying")
     if not isinstance(qualifying, list):
         raise ResultsApiError(f"run {run_id}: 'qualifying' is not a list")
-    rows = {f"{digest}:{index}": ticket for index, ticket in enumerate(qualifying)
-            if isinstance(ticket, dict)}
+    # Every retained row keeps its row_id, even a malformed one (not a
+    # dict) -- dropping it here would silently shrink the denominator
+    # below the frozen source row count. A non-dict entry is carried
+    # through as-is; _build_audit_rows()/_ticket_to_evidence() below treat
+    # it as a row with no usable ticket content, and evaluate_run's own
+    # audit_rows reconciliation reports it as an explicit unresolved row
+    # rather than one that simply never existed.
+    rows = {f"{digest}:{index}": ticket for index, ticket in enumerate(qualifying)}
     return data.get("provider"), digest, rows
 
 
@@ -156,6 +166,15 @@ def _build_audit_rows(provider, rows: dict) -> dict:
     second extract read required."""
     audit_rows = {}
     for row_id, ticket in rows.items():
+        if not isinstance(ticket, dict):
+            # provider=None skips the audited-provider check entirely
+            # (_validate_ticket_matches_audited_original), but this row_id
+            # is never supplied back in evidence["tickets"] anyway -- it
+            # surfaces solely through evaluate_run's own
+            # not_supplied_in_evidence reconciliation.
+            audit_rows[row_id] = {"code": None, "num_legs": None, "num_selections": 0,
+                                   "provider": None, "original_selections": []}
+            continue
         raw_selections = ticket.get("selections")
         original_selections = [s for s in raw_selections if isinstance(s, dict)] \
             if isinstance(raw_selections, list) else []
@@ -168,6 +187,8 @@ def _build_audit_rows(provider, rows: dict) -> dict:
 def _dates_needed(rows: dict) -> list[str]:
     dates = set()
     for ticket in rows.values():
+        if not isinstance(ticket, dict):
+            continue
         selections = ticket.get("selections")
         if not isinstance(selections, list):
             continue
@@ -452,7 +473,12 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
         evidence = {
             "fixtures": [_fixture_to_evidence_dict(f) for f in fixtures],
             "aliases": [], "verified_mappings": [],
-            "tickets": [_ticket_to_evidence(row_id, ticket, provider) for row_id, ticket in rows.items()],
+            # A malformed row (not a dict) is never supplied here -- it has
+            # no usable ticket content to convert -- but it is still a key
+            # in audit_rows above, so evaluate_run reports it as an
+            # explicit unresolved row instead of a silently shrunk N.
+            "tickets": [_ticket_to_evidence(row_id, ticket, provider) for row_id, ticket in rows.items()
+                        if isinstance(ticket, dict)],
         }
         try:
             report = evaluate_run(evidence, audit_rows=_build_audit_rows(provider, rows))

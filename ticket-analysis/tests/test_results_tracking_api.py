@@ -13,8 +13,8 @@ from tempfile import TemporaryDirectory
 
 from portfolio.results_tracking.jobs import JobState, JobStore
 from portfolio.results_tracking.results_api import (
-    ReportNotFoundError, ResultsApiConfig, ResultsApiError, _dates_needed,
-    _fixture_to_evidence_dict, _ticket_to_evidence, cancel_job,
+    ReportNotFoundError, ResultsApiConfig, ResultsApiError, _build_audit_rows,
+    _dates_needed, _fixture_to_evidence_dict, _ticket_to_evidence, cancel_job,
     compute_config_digest, get_latest_report, list_codes, load_population,
     publish_revision, submit_evaluation,
 )
@@ -80,6 +80,36 @@ class LoadPopulationTests(unittest.TestCase):
         with self.assertRaises(ResultsApiError):
             load_population(registry, "run-1")
 
+    def test_malformed_rows_are_preserved_not_dropped(self):
+        # S5-02: a non-dict retained row must still occupy a row_id -- the
+        # denominator never silently shrinks below the frozen source count.
+        valid = _ticket("C1", "A - B", "England - Premier League", "1X2", "1",
+                         "2026-10-23T15:00:00")
+        registry = FakeRegistry(_extract([valid, None, 42]))
+        provider, digest, rows = load_population(registry, "run-1")
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[f"{digest}:0"], valid)
+        self.assertIsNone(rows[f"{digest}:1"])
+        self.assertEqual(rows[f"{digest}:2"], 42)
+
+
+class BuildAuditRowsTests(unittest.TestCase):
+    def test_malformed_rows_get_a_placeholder_entry(self):
+        rows = {
+            "r0": _ticket("C1", "A - B", "L", "1X2", "1", "2026-10-23T15:00:00"),
+            "r1": None,
+            "r2": 42,
+        }
+        audit_rows = _build_audit_rows("bet9ja", rows)
+        self.assertEqual(len(audit_rows), 3)
+        self.assertEqual(audit_rows["r1"],
+                          {"code": None, "num_legs": None, "num_selections": 0,
+                           "provider": None, "original_selections": []})
+        self.assertEqual(audit_rows["r2"],
+                          {"code": None, "num_legs": None, "num_selections": 0,
+                           "provider": None, "original_selections": []})
+        self.assertEqual(audit_rows["r0"]["provider"], "bet9ja")
+
 
 class DatesNeededTests(unittest.TestCase):
     def test_extracts_distinct_sorted_dates(self):
@@ -92,6 +122,11 @@ class DatesNeededTests(unittest.TestCase):
     def test_ignores_malformed_kickoff(self):
         rows = {"r0": _ticket("C1", "A - B", "L", "1X2", "1", "not-a-date")}
         self.assertEqual(_dates_needed(rows), [])
+
+    def test_ignores_non_dict_rows(self):
+        rows = {"r0": _ticket("C1", "A - B", "L", "1X2", "1", "2026-10-24T15:00:00"),
+                "r1": None, "r2": 42}
+        self.assertEqual(_dates_needed(rows), ["2026-10-24"])
 
 
 class EvidenceConversionTests(unittest.TestCase):
@@ -252,6 +287,35 @@ class SubmitEvaluationTests(unittest.TestCase):
             self.assertEqual(client.calls, [])
             report = get_latest_report(config, "run-1")
             self.assertEqual(report["counts"]["total"], 1)
+
+    def test_malformed_rows_keep_their_place_in_the_denominator(self):
+        # S5-02 repro: [valid_ticket, null, 42] must produce N=3, with the
+        # two malformed rows surfacing as explicit not_supplied_in_evidence
+        # unresolved tickets rather than silently vanishing from the report.
+        with TemporaryDirectory() as tmp:
+            valid = _ticket("C1", "Arsenal - Chelsea", "England - Premier League", "1X2", "1",
+                             "2026-10-23T15:00:00")
+            registry = FakeRegistry(_extract([valid, None, 42]))
+            config = ResultsApiConfig(root=Path(tmp) / "results_api")
+            job_store = JobStore(Path(tmp) / "jobs")
+            client = FakeApiFootballClient({
+                "2026-10-23": [_raw_fixture(1, 39, "Premier League", "Arsenal", "Chelsea", "FT",
+                                             "2026-10-23T15:00:00+00:00", fulltime={"home": 2, "away": 1})],
+            })
+
+            record = submit_evaluation(registry, config, job_store, "run-1",
+                                        client_factory=lambda: client)
+            final = _wait_for_terminal(job_store, record.job_id)
+            self.assertEqual(final.state, JobState.SUCCEEDED)
+
+            report = get_latest_report(config, "run-1")
+            self.assertEqual(report["counts"]["total"], 3)
+            codes = list_codes(config, "run-1", report["revision_id"], limit=10)
+            not_supplied = [t for t in codes["rows"] if t["reason"] == "not_supplied_in_evidence"]
+            self.assertEqual(len(not_supplied), 2)
+            for ticket in not_supplied:
+                self.assertEqual(ticket["status"], "unresolved")
+                self.assertIsNone(ticket["ticket_id"])
 
 
 class CancelJobTests(unittest.TestCase):
