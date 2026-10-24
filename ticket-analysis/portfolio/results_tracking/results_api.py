@@ -46,7 +46,7 @@ from typing import Callable
 
 from .__main__ import EvaluationInputError, evaluate_run
 from .cache import CacheKey, FixtureCache, QuotaExceededError, QuotaTracker
-from .jobs import FatalTaskError, JobBudget, JobError, JobRecord, JobState, JobStore, Task, run_result_job
+from .jobs import FatalTaskError, JobBudget, JobError, JobRecord, JobState, JobStore, Task, WorkerOwnership, run_result_job
 from .sources.api_football import (
     ApiFootballClient, ApiFootballError, ApiFootballTransportError, build_fixture, filter_in_scope,
 )
@@ -428,18 +428,18 @@ def _fixtures_for_date(cache: FixtureCache, date: str) -> list:
             for item in filter_in_scope(raw_fixtures)]
 
 
-def publish_revision(config: ResultsApiConfig, run_id: str, evidence: dict, report: dict, *,
-                      input_digest: str, config_digest: str, audit_rows: dict | None = None) -> str:
-    """Writes a new revision directory, verifies its own hashes, then
-    publishes manifest.json and the latest.json pointer atomically. Never
-    touches a prior revision -- a failed publish leaves the last good report
-    (if any) exactly as it was.
+def _stage_revision(config: ResultsApiConfig, run_id: str, evidence: dict, report: dict, *,
+                      input_digest: str, config_digest: str, audit_rows: dict | None = None) -> dict:
+    """Stage and verify revision files without exposing a completion marker.
+
+    The worker may be cancelled while this writes. Publication happens later
+    under the job status lock, so a cancelled draft leaves the last report intact.
 
     When given, audit_rows is archived as audit_population.json alongside
     evidence.json/manifest.json, in exactly the layout __main__.py's
     --replay already expects from a prior `evaluate` command's output
     directory (F9_STEP4_REREVIEW.md S4R-04) -- so an HTTP-published revision
-    directory is itself a valid --replay target, with row_id/decisions
+    directory becomes a valid --replay target after commit, with row_id/decisions
     preserved after the run and its cache entries are gone (F9_STEP5_REVIEW.md
     S5-05), rather than replaying as an unanchored evidence-only evaluation
     whose row_ids come back null."""
@@ -471,10 +471,24 @@ def publish_revision(config: ResultsApiConfig, run_id: str, evidence: dict, repo
         if actual != expected:
             raise ResultsApiError(
                 f"revision {revision_id} for run {run_id} failed its own hash check for {rel_path}")
-    _write_atomic(rev_dir / "manifest.json", json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"))
+    return manifest
+
+
+def _publish_staged_revision(config: ResultsApiConfig, run_id: str, staged: dict) -> str:
+    revision_id = staged["revision_id"]
+    _write_atomic(config.revisions_root(run_id) / revision_id / "manifest.json",
+                  json.dumps(staged, indent=2, sort_keys=True).encode("utf-8"))
     _write_atomic(config.revisions_root(run_id) / "latest.json",
                   json.dumps({"revision_id": revision_id}, indent=2).encode("utf-8"))
     return revision_id
+
+
+def publish_revision(config: ResultsApiConfig, run_id: str, evidence: dict, report: dict, *,
+                     input_digest: str, config_digest: str, audit_rows: dict | None = None) -> str:
+    """Publish a standalone revision; job workers use the guarded commit below."""
+    staged = _stage_revision(config, run_id, evidence, report, input_digest=input_digest,
+                             config_digest=config_digest, audit_rows=audit_rows)
+    return _publish_staged_revision(config, run_id, staged)
 
 
 def _verified_revision_report(config: ResultsApiConfig, run_id: str, revision_id: str) -> dict:
@@ -536,38 +550,6 @@ def _default_client_factory(config: ResultsApiConfig) -> Callable[[], object]:
     return lambda: ApiFootballClient(timeout_s=config.per_call_timeout)
 
 
-# A server restart kills every background worker thread but not the
-# persisted STARTING/RUNNING job record it was driving (F9_STEP5_REVIEW.md
-# S5-03) -- create_or_reuse would otherwise hand that record back forever,
-# with no worker left to finish or cancel it. jobs.py already stamps
-# updated_at on every real progress write (run_result_job updates it once
-# per completed fetch chunk; submit_evaluation's own claim does too), so a
-# non-terminal job whose updated_at is older than this is not "still
-# running slowly", it has no live worker at all. This is deliberately a
-# fixed, generous threshold (not derived from the per-job fetch budget)
-# since a fully abandoned job never updates again, whatever its duration.
-_ABANDONED_JOB_AFTER_SECONDS = 300.0
-
-
-def _reclaim_if_abandoned(job_store: JobStore, job: JobRecord) -> JobRecord:
-    """Marks job FAILED (with a resumable "orphaned_worker" error) if it is
-    non-terminal but has had no progress update in
-    _ABANDONED_JOB_AFTER_SECONDS -- otherwise returns it unchanged. Doing
-    this makes the job terminal, so the caller's next create_or_reuse call
-    for the same identity mints a fresh job rather than reusing the dead
-    one; already-fetched/cached fixture data makes that retry cheap."""
-    if job.is_terminal:
-        return job
-    age = (datetime.now(timezone.utc) - datetime.fromisoformat(job.updated_at)).total_seconds()
-    if age <= _ABANDONED_JOB_AFTER_SECONDS:
-        return job
-    return job_store.update(job.job_id, lambda r: r.update(
-        state=JobState.FAILED,
-        error={"code": "orphaned_worker",
-               "message": f"no progress for over {_ABANDONED_JOB_AFTER_SECONDS:.0f}s; "
-                          "worker presumed lost (e.g. a server restart)"}))
-
-
 def _job_identity_digest(input_digest: str, allow_partial: bool) -> str:
     """Folds allow_partial into job identity (F9_STEP5_REVIEW.md S5-10): a
     frozen-checkpoint (partial) evaluation and a committed-extract
@@ -608,61 +590,53 @@ def submit_evaluation(registry, config: ResultsApiConfig, job_store: JobStore, r
         registry, run_id, allow_partial=allow_partial)
     config_digest = compute_config_digest(config)
     job_identity = _job_identity_digest(input_digest, allow_partial)
-    outer = job_store.create_or_reuse(run_id, job_identity, config_digest)
-    outer = _reclaim_if_abandoned(job_store, outer)
-    if outer.is_terminal:
-        # The job just reclaimed as orphaned is now terminal, so this call
-        # mints a fresh job for the same identity instead of reusing it.
-        outer = job_store.create_or_reuse(run_id, job_identity, config_digest)
-
-    # Claiming the STARTING -> RUNNING transition here (under update()'s
-    # flock) -- rather than inside the background thread -- is what makes
-    # "one active evaluation per identity" hold even when two submissions
-    # race immediately after create_or_reuse returns the same non-terminal
-    # job to both: only the caller whose mutate actually observes STARTING
-    # flips it, so exactly one of them spawns a thread for this job_id.
-    claimed = {"did": False}
-
-    def _claim(record: dict) -> None:
-        if record.get("state") == JobState.STARTING:
-            record.update(state=JobState.RUNNING)
-            claimed["did"] = True
-
-    job_store.update(outer.job_id, _claim)
-    if claimed["did"]:
-        thread = threading.Thread(
-            target=_run_evaluation_job,
-            args=(config, job_store, outer.job_id, run_id, provider, input_digest, config_digest,
-                  rows, population_complete, refresh, client_factory),
-            daemon=True)
-        thread.start()
+    outer, ownership = job_store.claim_worker(run_id, job_identity, config_digest)
+    if ownership is not None:
+        try:
+            thread = threading.Thread(
+                target=_run_evaluation_job,
+                args=(config, job_store, outer.job_id, run_id, provider, input_digest, config_digest,
+                      rows, population_complete, refresh, client_factory, ownership),
+                daemon=True)
+            thread.start()
+        except Exception as exc:
+            try:
+                job_store.update(outer.job_id, lambda r: r.update(
+                    state=JobState.FAILED,
+                    error={"code": "worker_launch_failed", "message": str(exc)}))
+            finally:
+                ownership.close()
     return job_store.get(outer.job_id)
 
 
-def _commit_publication(job_store: JobStore, outer_job_id: str, result: dict) -> None:
-    """The publication commit point (F9_STEP5_REVIEW.md S5-04):
-    publish_revision() has already written this revision and latest.json
-    by the time this runs, so the data is real and discoverable regardless
-    of what happens next. What was racy before was only the job *record*:
-    a cancel_requested set between the last pre-evaluation check and an
-    unconditional SUCCEEDED write was silently ignored, leaving a job that
-    read SUCCEEDED with cancel_requested=true and no explanation. Reading
-    cancel_requested and writing the terminal state in the same
-    job_store.update call closes that race -- a cancellation landing here
-    is reflected as CANCELLED, never silently coexisting with SUCCEEDED."""
-    def _commit(r):
-        if r.get("cancel_requested"):
-            r.update(state=JobState.CANCELLED, result=result)
+def _commit_publication(job_store: JobStore, outer_job_id: str,
+                        ownership: WorkerOwnership, publish: Callable[[], dict]) -> JobRecord:
+    """Linearize cancellation and publication under the same status lock.
+
+    Files are staged first. Only an active owner with no accepted cancellation
+    may publish the completion marker/latest pointer. A cancellation waiting for
+    this lock after publication began observes SUCCEEDED and is a terminal no-op.
+    Superseded/failed workers never invoke the side-effecting callback.
+    """
+    ownership.require(outer_job_id)
+
+    def commit(record):
+        ownership.require(outer_job_id)
+        if record.get("cancel_requested"):
+            record.update(state=JobState.CANCELLED, result=None)
         else:
-            r.update(state=JobState.SUCCEEDED, result=result)
-    job_store.update(outer_job_id, _commit)
+            result = publish()
+            record.update(state=JobState.SUCCEEDED, result=result)
+
+    return job_store.update(outer_job_id, commit)
 
 
 def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job_id: str, run_id: str,
                          provider, input_digest: str, config_digest: str, rows: dict,
                          population_complete: bool, refresh: bool,
-                         client_factory: Callable[[], object]) -> None:
+                         client_factory: Callable[[], object], ownership: WorkerOwnership) -> None:
     try:
+        ownership.require(outer_job_id)
         cache = FixtureCache(config.cache_root())
         quota = QuotaTracker(config.quota_root(), "api_football", config.daily_quota)
         dates = _dates_needed(rows)
@@ -747,35 +721,45 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
         report["population_complete"] = population_complete
 
         try:
-            revision_id = publish_revision(config, run_id, evidence, report, audit_rows=audit_rows,
-                                            input_digest=input_digest, config_digest=config_digest)
+            staged = _stage_revision(config, run_id, evidence, report, audit_rows=audit_rows,
+                                     input_digest=input_digest, config_digest=config_digest)
+
+            def publish():
+                revision_id = _publish_staged_revision(config, run_id, staged)
+                return {"revision_id": revision_id, "counts": report["counts"],
+                        "incomplete_dates": list(incomplete)}
+
+            _commit_publication(job_store, outer_job_id, ownership, publish)
         except (OSError, ResultsApiError) as exc:
             job_store.update(outer_job_id, lambda r: r.update(
                 state=JobState.FAILED, error={"code": "publish_failed", "message": str(exc)}))
-            return
 
-        result = {"revision_id": revision_id, "counts": report["counts"],
-                  "incomplete_dates": list(incomplete)}
-        _commit_publication(job_store, outer_job_id, result)
     except Exception as exc:  # the background thread must never die silently
         job_store.update(outer_job_id, lambda r: r.update(
             state=JobState.FAILED, error={"code": "internal_error", "message": str(exc)}))
 
+    finally:
+        ownership.close()
+
 
 def cancel_job(job_store: JobStore, job_id: str):
-    """Idempotent: requests cancellation of job_id and, if it is an outer
-    evaluation job that has already recorded an inner fetch job, propagates
-    the request there too.
+    """Cancel a live owner, or promptly settle a record whose owner is gone.
 
-    An abandoned job (S5-03: no live worker left to act on the request,
-    e.g. after a server restart) is reclaimed first, so cancelling it
-    resolves to its terminal orphaned_worker failure instead of merely
-    setting cancel_requested on a job nothing will ever look at again."""
-    reclaimed = _reclaim_if_abandoned(job_store, job_store.get(job_id))
-    if reclaimed.is_terminal:
-        return reclaimed
+    Never infer death from progress age. The same lifetime lock used at launch
+    protects both outer evaluation and inner fetch workers.
+    """
     record = job_store.request_cancel(job_id)
     fetch_job_id = record.progress.get("fetch_job_id")
     if fetch_job_id:
         job_store.request_cancel(fetch_job_id)
+    if not record.is_terminal:
+        ownership = job_store.try_acquire_worker(job_id)
+        if ownership is not None:
+            try:
+                record = job_store.update(job_id, lambda r: r.update(
+                    state=JobState.FAILED,
+                    error={"code": "orphaned_worker",
+                           "message": "worker lifetime lock released before completion"}))
+            finally:
+                ownership.close()
     return record

@@ -18,7 +18,6 @@ from portfolio.results_tracking import __main__ as results_cli
 from portfolio.results_tracking.jobs import JobState, JobStore
 from portfolio.results_tracking.cache import FixtureCache
 from portfolio.results_tracking.results_api import (
-    _ABANDONED_JOB_AFTER_SECONDS,
     ReportNotFoundError, ResultsApiConfig, ResultsApiError, _build_audit_rows,
     _cache_key_for_date, _commit_publication, _dates_needed, _default_client_factory,
     _fixture_to_evidence_dict, _ticket_to_evidence, cancel_job,
@@ -335,7 +334,10 @@ def _wait_for_terminal(job_store, job_id, timeout=5.0):
     while time.monotonic() < deadline:
         record = job_store.get(job_id)
         if record.state in ("succeeded", "failed", "cancelled"):
-            return record
+            ownership = job_store.try_acquire_worker(job_id)
+            if ownership is not None:
+                ownership.close()
+                return record
         time.sleep(0.02)
     raise AssertionError(f"job {job_id} did not reach a terminal state within {timeout}s")
 
@@ -421,7 +423,7 @@ class SubmitEvaluationTests(unittest.TestCase):
             _wait_for_terminal(job_store, abandoned.job_id)
             # Force it back to a never-finishing RUNNING state with a
             # stale heartbeat, as if its worker thread vanished mid-run.
-            stale = datetime.now(timezone.utc) - timedelta(seconds=_ABANDONED_JOB_AFTER_SECONDS + 1)
+            stale = datetime.now(timezone.utc) - timedelta(seconds=301)
             _force_job_record(job_store, abandoned.job_id,
                                state=JobState.RUNNING, updated_at=stale.isoformat())
             self.assertEqual(job_store.get(abandoned.job_id).state, JobState.RUNNING)
@@ -468,11 +470,12 @@ class SubmitEvaluationTests(unittest.TestCase):
                 final = _wait_for_terminal(job_store, record.job_id)
 
             self.assertEqual(final.state, JobState.CANCELLED)
-            # The revision was still published -- discoverable evidence is
-            # never thrown away just because a cancellation arrived too
-            # late to stop it (jobs.py's own cancellation contract).
-            report = get_latest_report(config, "run-1")
-            self.assertEqual(final.result["revision_id"], report["revision_id"])
+            # Cancellation won before the publication commit: staged evidence
+            # may survive, but no complete revision/latest pointer may appear.
+            self.assertIsNone(final.result)
+            with self.assertRaises(ReportNotFoundError):
+                get_latest_report(config, "run-1")
+            self.assertEqual(list(config.revisions_root("run-1").glob("*/manifest.json")), [])
 
     def test_an_empty_fixture_response_is_cached_as_pending_not_terminal(self):
         # S5-09 repro: a date with no in-scope fixtures returned yet must
@@ -798,7 +801,12 @@ class CommitPublicationTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             job_store = JobStore(Path(tmp))
             outer = job_store.create_or_reuse("run-1", "input-a", "config-a")
-            _commit_publication(job_store, outer.job_id, {"revision_id": "r1"})
+            ownership = job_store.try_acquire_worker(outer.job_id)
+            try:
+                _commit_publication(job_store, outer.job_id, ownership,
+                                    lambda: {"revision_id": "r1"})
+            finally:
+                ownership.close()
             record = job_store.get(outer.job_id)
             self.assertEqual(record.state, JobState.SUCCEEDED)
             self.assertEqual(record.result, {"revision_id": "r1"})
@@ -811,11 +819,16 @@ class CommitPublicationTests(unittest.TestCase):
             job_store = JobStore(Path(tmp))
             outer = job_store.create_or_reuse("run-1", "input-a", "config-a")
             job_store.request_cancel(outer.job_id)
-            _commit_publication(job_store, outer.job_id, {"revision_id": "r1"})
+            ownership = job_store.try_acquire_worker(outer.job_id)
+            try:
+                _commit_publication(job_store, outer.job_id, ownership,
+                                    lambda: {"revision_id": "r1"})
+            finally:
+                ownership.close()
             record = job_store.get(outer.job_id)
             self.assertEqual(record.state, JobState.CANCELLED)
-            # The published revision is still recorded, not discarded.
-            self.assertEqual(record.result, {"revision_id": "r1"})
+            # Cancellation prevents the side-effecting publish callback.
+            self.assertIsNone(record.result)
 
 
 class DefaultClientFactoryTests(unittest.TestCase):
@@ -857,7 +870,7 @@ class CancelJobTests(unittest.TestCase):
             job_store = JobStore(Path(tmp))
             outer = job_store.create_or_reuse("run-1", "input-a", "config-a")
             job_store.update(outer.job_id, lambda r: r.update(state=JobState.RUNNING))
-            _backdate_job(job_store, outer.job_id, _ABANDONED_JOB_AFTER_SECONDS + 1)
+            _backdate_job(job_store, outer.job_id, 301)
 
             record = cancel_job(job_store, outer.job_id)
 

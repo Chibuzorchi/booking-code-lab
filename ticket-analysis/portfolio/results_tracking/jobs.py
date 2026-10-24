@@ -165,6 +165,27 @@ class JobRecord:
         )
 
 
+class WorkerOwnership:
+    """A kernel lifetime lock, transferable from the submitting thread to its worker.
+
+    Process death closes the descriptor. Age, PIDs and progress timestamps are
+    deliberately not ownership evidence. Never unlink the lock file.
+    """
+
+    def __init__(self, job_id: str, fd: int):
+        self.job_id = job_id
+        self._fd = fd
+
+    def require(self, job_id: str) -> None:
+        if self._fd is None or self.job_id != job_id:
+            raise JobError("worker does not own this job")
+
+    def close(self) -> None:
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+
+
 class JobStore:
     """Durable job records under `root`, one directory per job_id plus an
     identity index for the one-active-job-per-identity rule."""
@@ -182,6 +203,67 @@ class JobStore:
 
     def _status_lock_path(self, job_id: str) -> Path:
         return self._job_dir(job_id) / "status.lock"
+
+    def try_acquire_worker(self, job_id: str) -> WorkerOwnership | None:
+        path = self._job_dir(job_id) / "worker.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            return None
+        except BaseException:
+            os.close(fd)
+            raise
+        return WorkerOwnership(job_id, fd)
+
+    def claim_worker(self, run_id: str, input_digest: str,
+                     config_digest: str) -> tuple[JobRecord, WorkerOwnership | None]:
+        """Publish/claim a worker under the identity lock, with no ownerless window.
+
+        An existing live owner wins even if it has made no progress for hours.
+        A free lifetime lock proves a nonterminal record has no worker; settle it
+        before replacing it. Acquire the new lock before publishing the record.
+        """
+        identity = identity_digest(run_id, input_digest, config_digest)
+        with _flock_path(self._identity_lock_path(identity)):
+            try:
+                existing_id = json.loads(self._identity_path(identity).read_text())["job_id"]
+                existing = self.get(existing_id)
+            except (FileNotFoundError, JobNotFoundError):
+                existing = None
+            if existing is not None and not existing.is_terminal:
+                ownership = self.try_acquire_worker(existing.job_id)
+                if ownership is None:
+                    return self.get(existing.job_id), None
+                try:
+                    self.update(existing.job_id, lambda r: r.update(
+                        state=JobState.FAILED,
+                        error={"code": "orphaned_worker",
+                               "message": "worker lifetime lock released before completion"}))
+                finally:
+                    ownership.close()
+
+            job_id = f"job-{uuid.uuid4().hex}"
+            ownership = self.try_acquire_worker(job_id)
+            if ownership is None:
+                raise JobError("could not acquire a new job's worker lock")
+            try:
+                now = _utcnow_iso()
+                record = {
+                    "job_id": job_id, "identity": identity, "run_id": run_id,
+                    "input_digest": input_digest, "config_digest": config_digest,
+                    "state": JobState.RUNNING, "created_at": now, "updated_at": now,
+                    "progress": {"tasks_total": None, "tasks_completed": [], "requests_used": 0},
+                    "cancel_requested": False, "error": None, "result": None,
+                }
+                self._write_status_dict(job_id, record)
+                _write_atomic(self._identity_path(identity), json.dumps({"job_id": job_id}).encode())
+                return JobRecord._from_dict(record), ownership
+            except BaseException:
+                ownership.close()
+                raise
 
     def _identity_path(self, identity: str) -> Path:
         return self._root / "identities" / f"{identity}.json"
@@ -359,6 +441,17 @@ def run_result_job(store: JobStore, job_id: str, tasks: Sequence[Task],
     """Runs (or resumes) a job's fetch tasks. Raises JobError if the job is
     already terminal. Re-raises FatalTaskError after marking the job failed.
     """
+    ownership = store.try_acquire_worker(job_id)
+    if ownership is None:
+        raise JobError(f"job {job_id} already has a live fetch worker")
+    try:
+        return _run_owned_result_job(store, job_id, tasks, fetch_one, budget)
+    finally:
+        ownership.close()
+
+
+def _run_owned_result_job(store: JobStore, job_id: str, tasks: Sequence[Task],
+                          fetch_one: Callable[[Task], Any], budget: JobBudget) -> JobRunOutcome:
     record = store.get(job_id)
     if record.is_terminal:
         raise JobError(f"job {job_id} is already terminal ({record.state})")
