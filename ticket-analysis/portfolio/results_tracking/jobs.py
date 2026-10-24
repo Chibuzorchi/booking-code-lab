@@ -53,6 +53,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -81,6 +82,13 @@ class JobError(RuntimeError):
 
 class JobNotFoundError(KeyError):
     """No job with this id is recorded."""
+
+
+# Matches exactly what create_or_reuse() mints (f"job-{uuid4().hex}"). A
+# caller-supplied job_id (e.g. from an HTTP path segment) is joined straight
+# into a filesystem path below, so anything else -- including one containing
+# "/" or ".." -- is rejected as not-found before that join happens.
+_JOB_ID_RE = re.compile(r"^job-[0-9a-f]{32}$")
 
 
 class FatalTaskError(RuntimeError):
@@ -160,6 +168,8 @@ class JobStore:
         self._root = Path(root)
 
     def _job_dir(self, job_id: str) -> Path:
+        if not isinstance(job_id, str) or not _JOB_ID_RE.match(job_id):
+            raise JobNotFoundError(job_id)
         return self._root / "jobs" / job_id
 
     def _status_path(self, job_id: str) -> Path:

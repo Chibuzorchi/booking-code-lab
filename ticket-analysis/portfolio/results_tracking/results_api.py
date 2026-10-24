@@ -47,7 +47,35 @@ from .sources.api_football import ApiFootballClient, ApiFootballError, build_fix
 
 PARSER_VERSION = "api_football_v1"
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+# Matches exactly what publish_revision() generates
+# (strftime("%Y%m%dT%H%M%S%f") + "-" + uuid4().hex[:8]); any other string,
+# including one containing "/" or "..", is rejected before it ever reaches
+# a filesystem join.
+_REVISION_ID_RE = re.compile(r"^\d{8}T\d{12}-[0-9a-f]{8}$")
+# A generic safe single path segment: no "/", ".", or anything else that
+# could change directory-join semantics. run_id's exact business shape is
+# RunRegistry's concern (and it is independently validated there, on the
+# submit path, via committed_extract_snapshot); this module only needs to
+# know it is safe to join into a path, since the GET read routes build a
+# revisions-directory path straight from the URL without ever consulting
+# the registry.
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 MAX_LIST_LIMIT = 200
+
+
+def _validate_revision_id(revision_id) -> str:
+    # Malformed and nonexistent look identical to a caller: both mean "no
+    # such revision", and raising the same error either way avoids leaking
+    # which one it was.
+    if not isinstance(revision_id, str) or not _REVISION_ID_RE.fullmatch(revision_id):
+        raise ReportNotFoundError(revision_id)
+    return revision_id
+
+
+def _validate_run_id(run_id) -> str:
+    if not isinstance(run_id, str) or not _SAFE_ID_RE.fullmatch(run_id):
+        raise ReportNotFoundError(run_id)
+    return run_id
 
 
 class ResultsApiError(RuntimeError):
@@ -250,6 +278,8 @@ def publish_revision(config: ResultsApiConfig, run_id: str, evidence: dict, repo
     publishes manifest.json and the latest.json pointer atomically. Never
     touches a prior revision -- a failed publish leaves the last good report
     (if any) exactly as it was."""
+    if not isinstance(run_id, str) or not _SAFE_ID_RE.fullmatch(run_id):
+        raise ResultsApiError(f"invalid run id: {run_id!r}")
     revision_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f") + "-" + uuid.uuid4().hex[:8]
     rev_dir = config.revisions_root(run_id) / revision_id
     rev_dir.mkdir(parents=True, exist_ok=False)
@@ -277,10 +307,17 @@ def publish_revision(config: ResultsApiConfig, run_id: str, evidence: dict, repo
 
 
 def _verified_revision_report(config: ResultsApiConfig, run_id: str, revision_id: str) -> dict:
+    _validate_run_id(run_id)
+    _validate_revision_id(revision_id)
     rev_dir = config.revisions_root(run_id) / revision_id
     try:
         manifest = json.loads((rev_dir / "manifest.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
+        raise ReportNotFoundError(f"{run_id}:{revision_id}")
+    # The identifier alone cannot cross a run boundary (regex-validated
+    # above), but belt-and-suspenders: the manifest's own recorded identity
+    # must also match what was requested.
+    if manifest.get("run_id") != run_id or manifest.get("revision_id") != revision_id:
         raise ReportNotFoundError(f"{run_id}:{revision_id}")
     for rel_path, expected in manifest["files"].items():
         actual = hashlib.sha256((rev_dir / rel_path).read_bytes()).hexdigest()
@@ -292,6 +329,7 @@ def _verified_revision_report(config: ResultsApiConfig, run_id: str, revision_id
 
 
 def get_latest_report(config: ResultsApiConfig, run_id: str) -> dict:
+    _validate_run_id(run_id)
     pointer_path = config.revisions_root(run_id) / "latest.json"
     try:
         pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
