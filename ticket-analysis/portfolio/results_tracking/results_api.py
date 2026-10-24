@@ -46,7 +46,7 @@ from typing import Callable
 
 from .__main__ import EvaluationInputError, evaluate_run
 from .cache import CacheKey, FixtureCache, QuotaExceededError, QuotaTracker
-from .jobs import FatalTaskError, JobBudget, JobError, JobState, JobStore, Task, run_result_job
+from .jobs import FatalTaskError, JobBudget, JobError, JobRecord, JobState, JobStore, Task, run_result_job
 from .sources.api_football import ApiFootballClient, ApiFootballError, build_fixture, filter_in_scope
 
 PARSER_VERSION = "api_football_v1"
@@ -466,6 +466,38 @@ def _default_client_factory() -> ApiFootballClient:
     return ApiFootballClient()
 
 
+# A server restart kills every background worker thread but not the
+# persisted STARTING/RUNNING job record it was driving (F9_STEP5_REVIEW.md
+# S5-03) -- create_or_reuse would otherwise hand that record back forever,
+# with no worker left to finish or cancel it. jobs.py already stamps
+# updated_at on every real progress write (run_result_job updates it once
+# per completed fetch chunk; submit_evaluation's own claim does too), so a
+# non-terminal job whose updated_at is older than this is not "still
+# running slowly", it has no live worker at all. This is deliberately a
+# fixed, generous threshold (not derived from the per-job fetch budget)
+# since a fully abandoned job never updates again, whatever its duration.
+_ABANDONED_JOB_AFTER_SECONDS = 300.0
+
+
+def _reclaim_if_abandoned(job_store: JobStore, job: JobRecord) -> JobRecord:
+    """Marks job FAILED (with a resumable "orphaned_worker" error) if it is
+    non-terminal but has had no progress update in
+    _ABANDONED_JOB_AFTER_SECONDS -- otherwise returns it unchanged. Doing
+    this makes the job terminal, so the caller's next create_or_reuse call
+    for the same identity mints a fresh job rather than reusing the dead
+    one; already-fetched/cached fixture data makes that retry cheap."""
+    if job.is_terminal:
+        return job
+    age = (datetime.now(timezone.utc) - datetime.fromisoformat(job.updated_at)).total_seconds()
+    if age <= _ABANDONED_JOB_AFTER_SECONDS:
+        return job
+    return job_store.update(job.job_id, lambda r: r.update(
+        state=JobState.FAILED,
+        error={"code": "orphaned_worker",
+               "message": f"no progress for over {_ABANDONED_JOB_AFTER_SECONDS:.0f}s; "
+                          "worker presumed lost (e.g. a server restart)"}))
+
+
 def submit_evaluation(registry, config: ResultsApiConfig, job_store: JobStore, run_id: str, *,
                        refresh: bool = False, allow_partial: bool = False,
                        client_factory: Callable[[], object] = _default_client_factory):
@@ -478,6 +510,11 @@ def submit_evaluation(registry, config: ResultsApiConfig, job_store: JobStore, r
     provider, input_digest, rows = load_population(registry, run_id)
     config_digest = compute_config_digest(config)
     outer = job_store.create_or_reuse(run_id, input_digest, config_digest)
+    outer = _reclaim_if_abandoned(job_store, outer)
+    if outer.is_terminal:
+        # The job just reclaimed as orphaned is now terminal, so this call
+        # mints a fresh job for the same identity instead of reusing it.
+        outer = job_store.create_or_reuse(run_id, input_digest, config_digest)
 
     # Claiming the STARTING -> RUNNING transition here (under update()'s
     # flock) -- rather than inside the background thread -- is what makes
@@ -602,7 +639,15 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
 def cancel_job(job_store: JobStore, job_id: str):
     """Idempotent: requests cancellation of job_id and, if it is an outer
     evaluation job that has already recorded an inner fetch job, propagates
-    the request there too."""
+    the request there too.
+
+    An abandoned job (S5-03: no live worker left to act on the request,
+    e.g. after a server restart) is reclaimed first, so cancelling it
+    resolves to its terminal orphaned_worker failure instead of merely
+    setting cancel_requested on a job nothing will ever look at again."""
+    reclaimed = _reclaim_if_abandoned(job_store, job_store.get(job_id))
+    if reclaimed.is_terminal:
+        return reclaimed
     record = job_store.request_cancel(job_id)
     fetch_job_id = record.progress.get("fetch_job_id")
     if fetch_job_id:

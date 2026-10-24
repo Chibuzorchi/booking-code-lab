@@ -8,12 +8,14 @@ import json
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from portfolio.results_tracking import __main__ as results_cli
 from portfolio.results_tracking.jobs import JobState, JobStore
 from portfolio.results_tracking.results_api import (
+    _ABANDONED_JOB_AFTER_SECONDS,
     ReportNotFoundError, ResultsApiConfig, ResultsApiError, _build_audit_rows,
     _dates_needed, _fixture_to_evidence_dict, _ticket_to_evidence, cancel_job,
     compute_config_digest, get_latest_report, list_codes, load_identity_evidence,
@@ -293,6 +295,21 @@ def _wait_for_terminal(job_store, job_id, timeout=5.0):
     raise AssertionError(f"job {job_id} did not reach a terminal state within {timeout}s")
 
 
+def _force_job_record(job_store, job_id, **fields):
+    """Rewrites a job's persisted record directly, bypassing
+    JobStore.update's terminal-state guard and "now" stamping -- used only
+    to simulate a worker-less job left mid-run by a server restart."""
+    status_path = job_store._status_path(job_id)
+    record = json.loads(status_path.read_text(encoding="utf-8"))
+    record.update(fields)
+    status_path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def _backdate_job(job_store, job_id, seconds_ago):
+    stale = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    _force_job_record(job_store, job_id, updated_at=stale.isoformat())
+
+
 class SubmitEvaluationTests(unittest.TestCase):
     def test_end_to_end_with_no_aliases_publishes_a_revision_with_honest_unresolved_outcomes(self):
         with TemporaryDirectory() as tmp:
@@ -337,6 +354,42 @@ class SubmitEvaluationTests(unittest.TestCase):
             final = _wait_for_terminal(job_store, first.job_id)
             self.assertEqual(final.state, JobState.SUCCEEDED)
             self.assertEqual(client.calls, ["2026-10-23"])  # fetched once, not twice
+
+    def test_a_worker_less_running_job_is_reclaimed_and_retried_on_resubmission(self):
+        # S5-03 repro: persist a RUNNING job for this identity with no
+        # worker thread behind it (simulating a server restart) and verify
+        # resubmission does not just hand that dead job back forever.
+        with TemporaryDirectory() as tmp:
+            registry = FakeRegistry(_extract([
+                _ticket("C1", "Arsenal - Chelsea", "England - Premier League", "1X2", "1",
+                        "2026-10-23T15:00:00"),
+            ]))
+            config = ResultsApiConfig(root=Path(tmp) / "results_api")
+            job_store = JobStore(Path(tmp) / "jobs")
+            client = FakeApiFootballClient({
+                "2026-10-23": [_raw_fixture(1, 39, "Premier League", "Arsenal", "Chelsea", "FT",
+                                             "2026-10-23T15:00:00+00:00", fulltime={"home": 2, "away": 1})],
+            })
+
+            abandoned = submit_evaluation(registry, config, job_store, "run-1",
+                                           client_factory=lambda: client)
+            _wait_for_terminal(job_store, abandoned.job_id)
+            # Force it back to a never-finishing RUNNING state with a
+            # stale heartbeat, as if its worker thread vanished mid-run.
+            stale = datetime.now(timezone.utc) - timedelta(seconds=_ABANDONED_JOB_AFTER_SECONDS + 1)
+            _force_job_record(job_store, abandoned.job_id,
+                               state=JobState.RUNNING, updated_at=stale.isoformat())
+            self.assertEqual(job_store.get(abandoned.job_id).state, JobState.RUNNING)
+
+            retried = submit_evaluation(registry, config, job_store, "run-1",
+                                         client_factory=lambda: client)
+            self.assertNotEqual(retried.job_id, abandoned.job_id)
+            final = _wait_for_terminal(job_store, retried.job_id)
+            self.assertEqual(final.state, JobState.SUCCEEDED)
+
+            orphaned = job_store.get(abandoned.job_id)
+            self.assertEqual(orphaned.state, JobState.FAILED)
+            self.assertEqual(orphaned.error["code"], "orphaned_worker")
 
     def test_no_dates_needed_still_publishes_a_report_for_every_row(self):
         with TemporaryDirectory() as tmp:
@@ -485,6 +538,22 @@ class CancelJobTests(unittest.TestCase):
             outer = job_store.create_or_reuse("run-1", "input-a", "config-a")
             record = cancel_job(job_store, outer.job_id)
             self.assertTrue(record.cancel_requested)
+
+    def test_cancelling_an_abandoned_job_resolves_it_instead_of_hanging(self):
+        # S5-03: cancelling a job with no live worker left (the review's
+        # "cancellation also has no worker to settle that abandoned
+        # record") must resolve it to terminal, not just flip a flag
+        # nothing will ever check again.
+        with TemporaryDirectory() as tmp:
+            job_store = JobStore(Path(tmp))
+            outer = job_store.create_or_reuse("run-1", "input-a", "config-a")
+            job_store.update(outer.job_id, lambda r: r.update(state=JobState.RUNNING))
+            _backdate_job(job_store, outer.job_id, _ABANDONED_JOB_AFTER_SECONDS + 1)
+
+            record = cancel_job(job_store, outer.job_id)
+
+            self.assertEqual(record.state, JobState.FAILED)
+            self.assertEqual(record.error["code"], "orphaned_worker")
 
 
 if __name__ == "__main__":
