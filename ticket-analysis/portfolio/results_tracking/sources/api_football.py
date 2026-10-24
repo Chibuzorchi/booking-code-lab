@@ -59,10 +59,20 @@ class ApiFootballClient:
             payload = resp.json()
         except (requests.RequestException, ValueError) as exc:
             raise ApiFootballError(f"request failed: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ApiFootballError(f"API-Football envelope is not a JSON object: {type(payload)!r}")
         errors = payload.get("errors")
         if errors:
             raise ApiFootballError(f"API-Football returned errors: {errors}")
-        return payload.get("response", [])
+        response = payload.get("response")
+        if response is None:
+            raise ApiFootballError("API-Football envelope has no 'response' field")
+        if not isinstance(response, list):
+            raise ApiFootballError(f"API-Football 'response' is not a list: {type(response)!r}")
+        for item in response:
+            if not isinstance(item, dict):
+                raise ApiFootballError(f"API-Football response item is not an object: {type(item)!r}")
+        return response
 
 
 def extract_regulation_score(fixture_json: dict) -> RegulationScore | None:

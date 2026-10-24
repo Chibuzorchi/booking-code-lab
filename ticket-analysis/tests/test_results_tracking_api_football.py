@@ -61,6 +61,38 @@ class ApiFootballClientTests(unittest.TestCase):
         with self.assertRaises(ApiFootballError):
             client.get_fixtures_by_date("2026-10-24")
 
+    def test_empty_envelope_raises_not_empty_list(self):
+        # F9_IMPLEMENTATION_REVIEW.md R11: a missing 'response' field must
+        # not look like a successful empty fixture lookup.
+        client = ApiFootballClient(api_key="k")
+        client.session.get = MagicMock(return_value=_mock_response({}))
+        with self.assertRaises(ApiFootballError):
+            client.get_fixtures_by_date("2026-10-24")
+
+    def test_response_wrong_type_dict_raises(self):
+        client = ApiFootballClient(api_key="k")
+        client.session.get = MagicMock(return_value=_mock_response({"response": {}, "errors": []}))
+        with self.assertRaises(ApiFootballError):
+            client.get_fixtures_by_date("2026-10-24")
+
+    def test_response_null_raises(self):
+        client = ApiFootballClient(api_key="k")
+        client.session.get = MagicMock(return_value=_mock_response({"response": None, "errors": []}))
+        with self.assertRaises(ApiFootballError):
+            client.get_fixtures_by_date("2026-10-24")
+
+    def test_top_level_list_envelope_raises(self):
+        client = ApiFootballClient(api_key="k")
+        client.session.get = MagicMock(return_value=_mock_response([]))
+        with self.assertRaises(ApiFootballError):
+            client.get_fixtures_by_date("2026-10-24")
+
+    def test_response_item_wrong_type_raises(self):
+        client = ApiFootballClient(api_key="k")
+        client.session.get = MagicMock(return_value=_mock_response({"response": ["not-a-dict"], "errors": []}))
+        with self.assertRaises(ApiFootballError):
+            client.get_fixtures_by_date("2026-10-24")
+
 
 class ExtractRegulationScoreTests(unittest.TestCase):
     def test_finished_match_extracted(self):
