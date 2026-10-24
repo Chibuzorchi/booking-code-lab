@@ -101,13 +101,23 @@ def _write_atomic(path: Path, raw_bytes: bytes) -> None:
 @dataclass(frozen=True)
 class ResultsApiConfig:
     """Everything a submission needs besides run_id/refresh/allow_partial.
-    Never populated from a client-supplied request body."""
+    Never populated from a client-supplied request body.
+
+    identity_config_path, when set, names a reviewed, server-controlled JSON
+    file shaped like evidence's own {"aliases": [...], "verified_mappings":
+    [...]}: the only source of alias/verified-mapping identity evidence the
+    HTTP path ever supplies (F9_STEP5_REVIEW.md S5-01). A client request
+    never influences this. Its contents are folded into
+    compute_config_digest() below, so editing it changes job identity
+    instead of silently reusing a stale cached result produced under a
+    different identity configuration."""
     root: Path
     daily_quota: int = 95
     max_workers: int = 4
     max_retries: int = 2
     per_call_timeout: float = 15.0
     max_requests_per_job: int = 90
+    identity_config_path: Path | None = None
 
     def cache_root(self) -> Path:
         return self.root / "cache"
@@ -122,11 +132,39 @@ class ResultsApiConfig:
         return self.root / "revisions" / run_id
 
 
+def load_identity_evidence(config: ResultsApiConfig) -> tuple[list, list]:
+    """Reads config.identity_config_path (if set) and returns the
+    (aliases, verified_mappings) evidence-shaped lists it holds, unparsed --
+    evaluate_run's own _parse_alias/_parse_verified_mapping/validate_aliases/
+    validate_verified_mappings already validate these exactly the same way
+    the CLI's --input evidence file is validated, so this does not duplicate
+    that validation, only locates the data. Returns ([], []) when no
+    identity config is configured, matching the prior (empty) behavior."""
+    if config.identity_config_path is None:
+        return [], []
+    try:
+        data = json.loads(config.identity_config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ResultsApiError(f"identity config {config.identity_config_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ResultsApiError(f"identity config {config.identity_config_path}: not a JSON object")
+    aliases = data.get("aliases", [])
+    verified_mappings = data.get("verified_mappings", [])
+    if not isinstance(aliases, list) or not isinstance(verified_mappings, list):
+        raise ResultsApiError(
+            f"identity config {config.identity_config_path}: "
+            "'aliases' and 'verified_mappings' must be lists")
+    return aliases, verified_mappings
+
+
 def compute_config_digest(config: ResultsApiConfig) -> str:
+    identity_bytes = (config.identity_config_path.read_bytes()
+                       if config.identity_config_path is not None else b"")
     payload = json.dumps({
         "daily_quota": config.daily_quota, "max_workers": config.max_workers,
         "max_retries": config.max_retries, "per_call_timeout": config.per_call_timeout,
         "max_requests_per_job": config.max_requests_per_job, "parser_version": PARSER_VERSION,
+        "identity_config_sha256": hashlib.sha256(identity_bytes).hexdigest(),
     }, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
@@ -201,6 +239,35 @@ def _dates_needed(rows: dict) -> list[str]:
     return sorted(dates)
 
 
+def _selection_kickoff_evidence(kickoff_raw) -> dict:
+    """Mirrors inputs.py's _kickoff_timezone_bucket detection: an
+    offset-aware raw kickoff string (an explicit "Z" suffix, or a
+    "+hh:mm"/"-hh:mm" offset after the date portion) carries real,
+    independently parseable timezone evidence and gets precision="exact"
+    with a UTC-normalized instant; a naive string (no offset) stays
+    "date_only" -- never assumed to be UTC or any particular local time
+    (fixtures.py's own documented rule, S4-08). raw is preserved
+    byte-for-byte either way, since evaluate_run's audit binding
+    (_validate_ticket_matches_audited_original) compares it against the
+    original selection's kickoff field verbatim. A missing/malformed raw
+    value becomes the literal "unknown" placeholder KickoffTime.raw requires
+    to be nonempty; it is never treated as if it were a real timestamp."""
+    if not isinstance(kickoff_raw, str) or not kickoff_raw:
+        return {"raw": "unknown", "precision": "date_only", "utc": None, "timezone_evidence": None}
+    tail = kickoff_raw[10:]
+    if kickoff_raw.endswith("Z") or "+" in tail or "-" in tail:
+        try:
+            parsed = datetime.fromisoformat(
+                kickoff_raw[:-1] + "+00:00" if kickoff_raw.endswith("Z") else kickoff_raw)
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.tzinfo is not None:
+            utc = parsed.astimezone(timezone.utc)
+            return {"raw": kickoff_raw, "precision": "exact", "utc": utc.isoformat(),
+                    "timezone_evidence": "explicit_offset_in_raw_kickoff_string"}
+    return {"raw": kickoff_raw, "precision": "date_only", "utc": None, "timezone_evidence": None}
+
+
 def _ticket_to_evidence(row_id: str, ticket: dict, provider: str | None) -> dict:
     legs = []
     selections = ticket.get("selections")
@@ -208,25 +275,30 @@ def _ticket_to_evidence(row_id: str, ticket: dict, provider: str | None) -> dict
         if not isinstance(selection, dict):
             continue
         kickoff_raw = selection.get("kickoff")
+        # A real selection carries its own native source event id (and,
+        # for lineless markets, an explicit "" specifier) -- discarding
+        # these forfeits VerifiedMapping's exact-id matching tier and
+        # bare over/under line resolution for no reason (F9_STEP5_REVIEW.md
+        # S5-01).
+        native_event_id = selection.get("native_event_id")
+        if native_event_id is None:
+            native_event_id = selection.get("event_id")
+        provider_event_id = str(native_event_id) if native_event_id is not None else None
         legs.append({
             "leg_id": f"{row_id}:{leg_index}",
             "provider": provider or "",
-            "provider_event_id": None,
+            "provider_event_id": provider_event_id,
             "event_display": selection.get("event") or "",
             "league_display": selection.get("league") or "",
             "sport": selection.get("sport") or "",
             "market": selection.get("market") or "",
             "pick": selection.get("pick") or "",
-            "specifier": "",
+            "specifier": selection.get("specifier") or "",
             # kickoff.raw must equal the original selection's kickoff value
             # exactly -- evaluate_run's audit binding
             # (_validate_ticket_matches_audited_original) compares this leg
-            # against the same original selection field-for-field. A missing
-            # kickoff becomes the literal string "unknown" only because
-            # KickoffTime.raw must be nonempty; it is never treated as if it
-            # were a real timestamp.
-            "kickoff": {"raw": kickoff_raw if isinstance(kickoff_raw, str) and kickoff_raw else "unknown",
-                        "precision": "date_only", "utc": None, "timezone_evidence": None},
+            # against the same original selection field-for-field.
+            "kickoff": _selection_kickoff_evidence(kickoff_raw),
         })
     return {
         "ticket_id": ticket.get("code") or row_id,
@@ -485,9 +557,16 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
             if date not in incomplete:
                 fixtures.extend(_fixtures_for_date(cache, date))
 
+        try:
+            aliases, verified_mappings = load_identity_evidence(config)
+        except ResultsApiError as exc:
+            job_store.update(outer_job_id, lambda r: r.update(
+                state=JobState.FAILED, error={"code": "invalid_identity_config", "message": str(exc)}))
+            return
+
         evidence = {
             "fixtures": [_fixture_to_evidence_dict(f) for f in fixtures],
-            "aliases": [], "verified_mappings": [],
+            "aliases": aliases, "verified_mappings": verified_mappings,
             # A malformed row (not a dict) is never supplied here -- it has
             # no usable ticket content to convert -- but it is still a key
             # in audit_rows above, so evaluate_run reports it as an

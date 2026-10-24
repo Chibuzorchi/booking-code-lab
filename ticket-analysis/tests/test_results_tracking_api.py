@@ -16,8 +16,8 @@ from portfolio.results_tracking.jobs import JobState, JobStore
 from portfolio.results_tracking.results_api import (
     ReportNotFoundError, ResultsApiConfig, ResultsApiError, _build_audit_rows,
     _dates_needed, _fixture_to_evidence_dict, _ticket_to_evidence, cancel_job,
-    compute_config_digest, get_latest_report, list_codes, load_population,
-    publish_revision, submit_evaluation,
+    compute_config_digest, get_latest_report, list_codes, load_identity_evidence,
+    load_population, publish_revision, submit_evaluation,
 )
 from portfolio.results_tracking.sources.api_football import build_fixture, filter_in_scope
 
@@ -112,6 +112,44 @@ class BuildAuditRowsTests(unittest.TestCase):
         self.assertEqual(audit_rows["r0"]["provider"], "bet9ja")
 
 
+class LoadIdentityEvidenceTests(unittest.TestCase):
+    def test_returns_empty_lists_when_unconfigured(self):
+        config = ResultsApiConfig(root=Path("/nonexistent"))
+        self.assertEqual(load_identity_evidence(config), ([], []))
+
+    def test_reads_aliases_and_verified_mappings_from_the_configured_file(self):
+        with TemporaryDirectory() as tmp:
+            identity_path = Path(tmp) / "identity.json"
+            identity_path.write_text(json.dumps({
+                "aliases": [{"namespace": "bet9ja_team", "display_name": "Man Utd", "canonical": "Manchester United"}],
+                "verified_mappings": [],
+            }), encoding="utf-8")
+            config = ResultsApiConfig(root=Path(tmp), identity_config_path=identity_path)
+            aliases, verified_mappings = load_identity_evidence(config)
+            self.assertEqual(len(aliases), 1)
+            self.assertEqual(verified_mappings, [])
+
+    def test_rejects_a_non_object_identity_config(self):
+        with TemporaryDirectory() as tmp:
+            identity_path = Path(tmp) / "identity.json"
+            identity_path.write_text("[]", encoding="utf-8")
+            config = ResultsApiConfig(root=Path(tmp), identity_config_path=identity_path)
+            with self.assertRaises(ResultsApiError):
+                load_identity_evidence(config)
+
+    def test_config_digest_changes_when_identity_config_content_changes(self):
+        with TemporaryDirectory() as tmp:
+            identity_path = Path(tmp) / "identity.json"
+            identity_path.write_text(json.dumps({"aliases": [], "verified_mappings": []}), encoding="utf-8")
+            config = ResultsApiConfig(root=Path(tmp), identity_config_path=identity_path)
+            digest_before = compute_config_digest(config)
+            identity_path.write_text(json.dumps({"aliases": [{"namespace": "bet9ja_team",
+                                                                "display_name": "A", "canonical": "B"}],
+                                                   "verified_mappings": []}), encoding="utf-8")
+            digest_after = compute_config_digest(config)
+            self.assertNotEqual(digest_before, digest_after)
+
+
 class DatesNeededTests(unittest.TestCase):
     def test_extracts_distinct_sorted_dates(self):
         rows = {
@@ -141,6 +179,33 @@ class EvidenceConversionTests(unittest.TestCase):
         self.assertEqual(leg["event_display"], "A - B")
         self.assertEqual(leg["kickoff"]["raw"], "2026-10-23T15:00:00")
         self.assertEqual(leg["kickoff"]["precision"], "date_only")
+
+    def test_preserves_specifier_and_native_event_id(self):
+        ticket = {"code": "C1", "num_legs": 1, "bet_type": "single",
+                  "selections": [{"event": "A - B", "league": "L", "market": "over_under",
+                                   "pick": "Over", "specifier": "2.5", "kickoff": "2026-10-23T15:00:00",
+                                   "sport": "football", "native_event_id": "1001"}]}
+        leg = _ticket_to_evidence("digest:0", ticket, "bet9ja")["legs"][0]
+        self.assertEqual(leg["specifier"], "2.5")
+        self.assertEqual(leg["provider_event_id"], "1001")
+
+    def test_falls_back_to_legacy_event_id_when_native_event_id_is_absent(self):
+        ticket = _ticket("C1", "A - B", "L", "1X2", "1", "2026-10-23T15:00:00")
+        ticket["selections"][0]["event_id"] = 1001
+        leg = _ticket_to_evidence("digest:0", ticket, "bet9ja")["legs"][0]
+        self.assertEqual(leg["provider_event_id"], "1001")
+
+    def test_offset_aware_kickoff_gets_exact_precision(self):
+        ticket = _ticket("C1", "A - B", "L", "1X2", "1", "2026-10-23T15:00:00+00:00")
+        leg = _ticket_to_evidence("digest:0", ticket, "bet9ja")["legs"][0]
+        self.assertEqual(leg["kickoff"]["precision"], "exact")
+        self.assertEqual(leg["kickoff"]["utc"], "2026-10-23T15:00:00+00:00")
+
+    def test_naive_kickoff_stays_date_only(self):
+        ticket = _ticket("C1", "A - B", "L", "1X2", "1", "2026-10-23T15:00:00")
+        leg = _ticket_to_evidence("digest:0", ticket, "bet9ja")["legs"][0]
+        self.assertEqual(leg["kickoff"]["precision"], "date_only")
+        self.assertIsNone(leg["kickoff"]["utc"])
 
     def test_fixture_to_evidence_dict_round_trips_through_main_parser(self):
         from portfolio.results_tracking.__main__ import _parse_fixture
@@ -288,6 +353,56 @@ class SubmitEvaluationTests(unittest.TestCase):
             self.assertEqual(client.calls, [])
             report = get_latest_report(config, "run-1")
             self.assertEqual(report["counts"]["total"], 1)
+
+    def test_a_verified_mapping_produces_a_real_matched_leg_through_the_http_path(self):
+        # S5-01: with a server-side identity config supplying a hand-verified
+        # mapping for this exact native event id, the HTTP path must reach a
+        # real MATCHED leg with the correct won/lost outcome, not merely an
+        # honest unresolved/fixture_not_matched -- the review's prior repro.
+        # Ticket-level status stays unresolved/unverified_ticket_structure
+        # regardless (verify_bet_type is always "unverified" -- no documented
+        # provider bet-structure mapping exists, provider_types.py); that is
+        # unrelated, pre-existing, intentional behavior this fix does not
+        # touch, so the assertion is on the leg, not report["counts"].
+        with TemporaryDirectory() as tmp:
+            ticket = {"code": "C1", "num_legs": 1, "bet_type": "single",
+                      "selections": [{"event": "Arsenal - Chelsea", "league": "England - Premier League",
+                                       "market": "1X2", "pick": "1", "kickoff": "2026-10-23T15:00:00",
+                                       "sport": "Soccer", "native_event_id": "1001"}]}
+            registry = FakeRegistry(_extract([ticket]))
+            identity_path = Path(tmp) / "identity.json"
+            identity_path.write_text(json.dumps({
+                "aliases": [],
+                "verified_mappings": [{
+                    "provider": "bet9ja", "provider_event_id": "1001",
+                    "league_display": "England - Premier League",
+                    "home_display": "Arsenal", "away_display": "Chelsea",
+                    "source": "api_football", "source_fixture_id": "1",
+                    "source_competition": "Premier League",
+                    "source_home_team": "Arsenal", "source_away_team": "Chelsea",
+                    "source_kickoff_raw": "2026-10-23T15:00:00+00:00",
+                    "verified_at": "2026-10-23T00:00:00+00:00",
+                    "evidence": "hand-verified for this test",
+                }],
+            }), encoding="utf-8")
+            config = ResultsApiConfig(root=Path(tmp) / "results_api", identity_config_path=identity_path)
+            job_store = JobStore(Path(tmp) / "jobs")
+            client = FakeApiFootballClient({
+                "2026-10-23": [_raw_fixture(1, 39, "Premier League", "Arsenal", "Chelsea", "FT",
+                                             "2026-10-23T15:00:00+00:00", fulltime={"home": 2, "away": 1})],
+            })
+
+            record = submit_evaluation(registry, config, job_store, "run-1",
+                                        client_factory=lambda: client)
+            final = _wait_for_terminal(job_store, record.job_id)
+            self.assertEqual(final.state, JobState.SUCCEEDED)
+
+            report = get_latest_report(config, "run-1")
+            codes = list_codes(config, "run-1", report["revision_id"], limit=10)
+            leg = codes["rows"][0]["legs"][0]
+            self.assertEqual(leg["status"], "won")
+            self.assertEqual(leg["match_tier"], "verified_mapping")
+            self.assertEqual(leg["matched_fixture"], {"source": "api_football", "source_fixture_id": "1"})
 
     def test_malformed_rows_keep_their_place_in_the_denominator(self):
         # S5-02 repro: [valid_ticket, null, 42] must produce N=3, with the
