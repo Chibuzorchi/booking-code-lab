@@ -8,13 +8,18 @@ Layout (worker.py owns the provider-scoped run tree):
         run.lock          inherited lifetime lock, acquired before publication
         worker.exit.json  supervisor-written completion evidence {exit_code}
         progress.json     worker-owned structured live counters (throttled)
+        seed.json         worker-owned booking outcome for a fresh-seed run
         worker.log        worker stdout/stderr
+        checkpoint.json   worker-owned codes found so far (extract-shaped, partial)
         extracts/         the scan's committed extract (exactly one per run)
         codes/            the scan's code list
 
 Writer ownership: the RunRegistry writes status.json/launch.pending and
-nothing else; the worker writes progress.json/extracts/codes/worker.log and
-the SUPERVISOR writes worker.exit.json. Live counter reads merge progress.json
+nothing else; the worker writes progress.json/seed.json/extracts/codes/
+worker.log and the SUPERVISOR writes worker.exit.json. A fresh-seed run
+starts with no seed at all: the worker books one, records it in seed.json,
+and only then scans. Reads merge that seed into the status view, so "seed is
+still null while the run is active" is exactly "still booking". Live counter reads merge progress.json
 into the status view but are never persisted into status.json until
 finalization, so a progress update can never overwrite a cancellation or
 terminal state. Counters are only ever stated when known: null means
@@ -72,6 +77,10 @@ NONTERMINAL_STATES = {STATE_STARTING, STATE_RUNNING}
 
 COUNTER_KEYS = ("tried", "found_ok", "qualifying",
                 "excluded_simulations", "unpriced")
+
+# A booked seed is a provider booking code: short, alphanumeric, no separators.
+# Anything else in seed.json is ignored rather than shown or scanned.
+_SEED_RE = re.compile(r"^[A-Za-z0-9]{4,16}$")
 
 # Test seam: pause between status publication and worker launch so tests can
 # deterministically exercise the launch window. Zero in production.
@@ -148,6 +157,9 @@ def _initial_status(provider: str, run_id: str, request: dict) -> dict:
         "provider": provider,
         "state": STATE_STARTING,
         "request": request,
+        # The seed in play: the supplied code, or null until a fresh-seed
+        # worker books one. Reads fill it in from the worker's seed.json.
+        "seed": request.get("seed"),
         "started_at": now,
         "finished_at": None,
         "updated_at": now,
@@ -187,11 +199,17 @@ class RunRegistry:
 
     # ------------------------------------------------------------------ start
 
-    def start_scan(self, provider: str, seed: str, *, max_qualifying: int = 0,
+    def start_scan(self, provider: str, seed: str | None = None, *,
+                   fresh_seed: bool = False, max_qualifying: int = 0,
                    min_odds: float | None = None, max_odds: float | None = None,
                    max_codes: int | None = None, depth: int | None = None,
                    env_extra: dict | None = None) -> dict:
         """Start a provider scan job; returns the public status view.
+
+        Supply either an explicit seed or fresh_seed=True, never both: a
+        fresh-seed run books its own code in the provider's browser flow
+        before it scans, so the seed is unknown at this point and arrives
+        later through the run's seed.json.
 
         Raises JobBusyError (no run record created) when the provider already
         has an active job, ValueError for bad inputs. Launch failures are
@@ -200,9 +218,14 @@ class RunRegistry:
         env_extra mirrors WorkerHost.start_scan: additional child environment
         entries that win over the isolated environment.
         """
-        if not isinstance(seed, str) or not seed.strip():
+        if type(fresh_seed) is not bool:
+            raise ValueError("fresh_seed must be a boolean")
+        if fresh_seed:
+            if seed is not None:
+                raise ValueError("fresh_seed books its own seed; do not supply one")
+        elif not isinstance(seed, str) or not seed.strip():
             raise ValueError("seed must be a non-empty booking code")
-        self.host.provider_root(provider)  # validates provider
+        self.host.provider_root(provider, fresh_seed=fresh_seed)  # validates provider
         for name, value, minimum in (("max_qualifying", max_qualifying, 0),
                                      ("max_codes", max_codes, 1), ("depth", depth, 1)):
             if value is not None and (type(value) is not int or value < minimum):
@@ -231,13 +254,15 @@ class RunRegistry:
         with _flock_path(run_dir / "run.lock") as run_lock_fd:
             self._launch_scan(provider, seed, run_id, run_dir, run_lock_fd,
                                        max_qualifying, min_odds, max_odds, max_codes,
-                                       depth, env_extra)
+                                       depth, env_extra, fresh_seed)
         # The host reference is closed; supervisors/workers retain theirs.
         return self.get(run_id)
 
     def _launch_scan(self, provider, seed, run_id, run_dir, run_lock_fd,
-                     max_qualifying, min_odds, max_odds, max_codes, depth, env_extra):
-        request = {"seed": seed, "max_qualifying": int(max_qualifying),
+                     max_qualifying, min_odds, max_odds, max_codes, depth, env_extra,
+                     fresh_seed=False):
+        request = {"seed": seed, "fresh_seed": bool(fresh_seed),
+                   "max_qualifying": int(max_qualifying),
                    "min_odds": min_odds, "max_odds": max_odds,
                    "max_codes": max_codes, "depth": depth}
         # Diagnostic claim precedes publication. The inherited run.lock,
@@ -258,7 +283,7 @@ class RunRegistry:
                 return self._public(run_dir, current)
         try:
             job = self.host.start_scan(
-                provider, seed, max_qualifying=max_qualifying,
+                provider, seed, fresh_seed=fresh_seed, max_qualifying=max_qualifying,
                 min_odds=min_odds, max_odds=max_odds, max_codes=max_codes,
                 depth=depth, run_dir=run_dir, env_extra=env_extra,
                 run_lock_fd=run_lock_fd)
@@ -385,6 +410,28 @@ class RunRegistry:
             raise RunStateError(
                 f"run {run_id}: committed extract changed after commitment")
         return candidate, raw
+
+    def saved_codes_snapshot(self, run_id: str) -> tuple[Path, bytes, bool]:
+        """What a run has saved, whatever became of it: (path, bytes, partial).
+
+        A succeeded run answers with its committed extract. Any other run
+        answers with the worker's checkpoint -- the codes it had found when it
+        last saved -- so a scan that fails or is cancelled does not take its
+        hits with it. The checkpoint is evidence of what was found, never of
+        success: it feeds listing only, and no run state is inferred from it.
+        """
+        status = self.get(run_id)
+        if status.get("state") == STATE_SUCCEEDED:
+            return (*self.committed_extract_snapshot(run_id), False)
+        path = self._resolve_run_dir(run_id) / "checkpoint.json"
+        try:
+            raw = path.read_bytes()
+            data = _parse_strict_json(raw)
+        except (OSError, ValueError) as exc:
+            raise RunStateError(f"run {run_id} has no saved codes") from exc
+        if self._validate_extract(data, status.get("provider")):
+            raise RunStateError(f"run {run_id}: saved codes are not usable")
+        return path, raw, True
 
     # ----------------------------------------------------------------- cancel
 
@@ -557,11 +604,16 @@ class RunRegistry:
                                              "outcome unknown (fail closed)"}}
             rc = evidence["exit_code"]
         if rc != 0:
+            # A fresh-seed worker that failed while booking says so in seed.json;
+            # that reason is far more useful than the exit code it became.
+            booking = self._booking_error(run_dir)
+            error = ({"code": "booking_failed",
+                      "message": f"fresh-seed booking failed: {booking}"} if booking
+                     else {"code": "worker_exit",
+                           "message": f"worker exited with code {rc}"})
             return {"state": STATE_FAILED, "finished_at": _utcnow(),
                     "updated_at": _utcnow(), "stop_reason": "failure",
-                    "counters": counters, "extract": None,
-                    "error": {"code": "worker_exit",
-                              "message": f"worker exited with code {rc}"}}
+                    "counters": counters, "extract": None, "error": error}
         candidates = sorted((run_dir / "extracts").glob("*.json"))
         if len(candidates) != 1:
             code = "missing_extract" if not candidates else "multiple_extracts"
@@ -707,6 +759,7 @@ class RunRegistry:
         return candidate
 
     def _public(self, run_dir: Path, status: dict) -> dict:
+        view = status
         if status.get("state") in NONTERMINAL_STATES:
             progress = self._read_progress(run_dir)
             if progress:
@@ -717,8 +770,16 @@ class RunRegistry:
                         counters[key] = progress[key]
                 view["counters"] = counters
                 view["live_progress_at"] = progress.get("updated_at")
-                return view
-        return status
+        # A fresh-seed run has no seed until its worker books one. seed.json is
+        # as durable as the run directory itself, so merging on read keeps the
+        # booked code visible without ever racing the finalizer for status.json.
+        if not view.get("seed"):
+            requested = (status.get("request") or {}).get("seed")
+            resolved = self._read_seed(run_dir) or requested
+            if view is status:
+                view = dict(status)
+            view["seed"] = resolved if isinstance(resolved, str) and resolved else None
+        return view
 
     @staticmethod
     def _read_progress(run_dir: Path) -> dict | None:
@@ -727,6 +788,44 @@ class RunRegistry:
         except (OSError, ValueError):
             return None
         return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _read_seed(run_dir: Path) -> str | None:
+        """The booking code a fresh-seed worker recorded, or None.
+
+        Identity is checked against the directory the record sits in and the
+        value against the shape of a provider booking code, so a truncated,
+        foreign or hand-edited file reads as "no seed yet" rather than
+        becoming something the page displays or an analysis attributes.
+        """
+        record = RunRegistry._read_seed_record(run_dir)
+        if record is None:
+            return None
+        seed = record.get("seed")
+        if isinstance(seed, str) and _SEED_RE.fullmatch(seed):
+            return seed
+        return None
+
+    @staticmethod
+    def _read_seed_record(run_dir: Path) -> dict | None:
+        try:
+            data = json.loads((run_dir / "seed.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if (isinstance(data, dict)
+                and data.get("run_id") == run_dir.name
+                and data.get("provider") == run_dir.parent.name):
+            return data
+        return None
+
+    @staticmethod
+    def _booking_error(run_dir: Path) -> str | None:
+        """Why a fresh-seed worker never produced a seed, if it said so."""
+        record = RunRegistry._read_seed_record(run_dir)
+        if record is None or record.get("seed") is not None:
+            return None
+        message = record.get("error")
+        return message[:500] if isinstance(message, str) and message else None
 
     @staticmethod
     def _read_worker_exit(run_dir: Path) -> dict | None:

@@ -30,6 +30,7 @@ class El {
     this.value = '';
     this.hidden = false;
     this.disabled = false;
+    this.checked = false;
   }
   get firstChild() { return this.childNodes[0] || null; }
   append(...kids) { for (const kid of kids) this.childNodes.push(kid); }
@@ -41,13 +42,16 @@ class El {
   fire(type) {
     const event = {preventDefault() {}, stopPropagation() {}, type};
     for (const fn of this.listeners[type] || []) fn(event);
+    const inline = this['on' + type];        // a real click runs onclick as well
+    if (typeof inline === 'function') inline(event);
   }
+  get text() { return this.textContent || this.childNodes.map(kid => kid.text).join(''); }
 }
 
 /* A fresh world per scenario: its own elements, timers and pending requests. */
 function boot(values) {
   const nodes = new Map();
-  const world = {pending: [], timers: new Map()};
+  const world = {pending: [], timers: new Map(), copied: []};
   const el = id => {
     if (!nodes.has(id)) {
       const made = new El('div');
@@ -71,7 +75,8 @@ function boot(values) {
   const clearIntervalStub = id => { world.timers.delete(id); };
   new Function('document', 'window', 'fetch', 'setInterval', 'clearInterval', 'setTimeout', 'Copy', SOURCE)(
     document, {addEventListener() {}}, fetch, setIntervalStub, clearIntervalStub, fn => fn(),
-    {button() { return true; }, text() { return true; }, flash() {}, offer() {}, shortcut: () => 'Ctrl-C'});
+    {button(el, value) { world.copied.push(value); return true; },
+     text() { return true; }, flash() {}, offer() {}, shortcut: () => 'Ctrl-C'});
   return world;
 }
 
@@ -87,6 +92,27 @@ const answer = (call, data, status = 200) =>
 const counting = () => ({tried: 9, found_ok: 4, qualifying: 2, excluded_simulations: 1, unpriced: 0});
 const runStatus = (run_id, state, provider = 'bet9ja') =>
   ({run_id, provider, state, counters: counting(), request: {seed: 'SEED123'}});
+
+/* Four distinct codes: three priced apart, one the scanner could not price. */
+const ticket = (code, odds, legs) => ({
+  id: `bet9ja:${code}`, raw: {code}, num_legs: legs || 2,
+  odds: odds == null ? {} : {parsed_leg_product: odds},
+  legs: [{event: 'A v B', league: 'L', market: '1X2', pick: 'Home', odds: 2.5, kickoff: 'k'}],
+});
+const bandedReport = run_id => ({
+  run_id, input_count: 9, pool_size: 6, distinct_codes: 4, overlapping_codes: 2, shared_legs: 1,
+  excluded: [], odds_basis: 'parsed_leg_product', odds_label: 'recorded, not verified payout',
+  min_odds: 1, max_odds: null, top_legs: [],
+  distinct: [ticket('LOW111', 9), ticket('MID222', 400), ticket('HIGH33', 9000), ticket('NOPRICE', null)],
+});
+
+/* The whole pool for a run: the four above plus two that overlap each other. */
+const codesReport = run_id => ({
+  run_id, input_count: 9, pool_size: 6, excluded: [], odds_basis: 'parsed_leg_product',
+  odds_label: 'recorded, not verified payout', min_odds: 1, max_odds: null,
+  codes: [ticket('MID222', 400), ticket('LOW111', 9), ticket('NOPRICE', null),
+          ticket('HIGH33', 9000), ticket('TWIN44', 50), ticket('TWIN55', 60)],
+});
 
 const distinctReport = run_id => ({
   run_id, input_count: 3, pool_size: 2, distinct_codes: 1, overlapping_codes: 1, shared_legs: 1,
@@ -139,8 +165,14 @@ function press(world, id) {
   world.el(id).fire('click');
 }
 
+const shownCodes = world => world.el('s2-cards').childNodes
+  .map(card => card.childNodes[0].childNodes[0].childNodes[1].textContent);
+
 const look = world => ({
   state_line: world.el('s1-state').textContent,
+  seed_row: (world.el('s1-counters').childNodes
+    .map(li => li.childNodes.map(cell => cell.textContent))
+    .filter(pair => pair[0] === 'Seed').map(pair => pair[1])[0] || ''),
   run_disabled: world.el('s1-run').disabled,
   cancel_disabled: world.el('s1-cancel').disabled,
   s2_locked: world.el('s2-fields').disabled,
@@ -148,6 +180,8 @@ const look = world => ({
   s2_cards: world.el('s2-cards').childNodes.length,
   s3_cards: world.el('s3-cards').childNodes.length,
   s3_facts_hidden: world.el('s3-facts').hidden,
+  s2_note: world.el('s2-count').textContent,
+  s2_shown: shownCodes(world),
   polling: world.timers.size > 0,
 });
 
@@ -344,6 +378,202 @@ Object.assign(scenarios, {
     }
     return result;
   },
+  /* F8: the fresh-seed box replaces the seed field and books during the run. */
+  async fresh_seed() {
+    const world = await start();
+    const before = {seed_disabled: world.el('seed').disabled,
+                    hint: world.el('seed-hint').textContent};
+    world.el('fresh_seed').checked = true;
+    world.el('fresh_seed').fire('change');
+    const ticked = {seed_disabled: world.el('seed').disabled,
+                    hint: world.el('seed-hint').textContent};
+    world.el('scan-form').fire('submit');
+    await settle();
+    const post = take(world, '/api/scan');
+    const booking = {provider: 'bet9ja', run_id: 'RUN_F', state: 'running', seed: null,
+                     counters: counting(), request: {seed: null, fresh_seed: true}};
+    answer(post, booking, 202);
+    await settle();
+    const while_booking = look(world);
+    for (const fire of [...world.timers.values()]) fire();
+    await settle();
+    const poll = take(world, '/api/scan/RUN_F');
+    answer(poll, {...booking, seed: 'BK9JA07'});
+    await settle();
+    const booked = look(world);
+    const finished = await (async () => {
+      for (const fire of [...world.timers.values()]) fire();
+      await settle();
+      const call = take(world, '/api/scan/RUN_F');
+      answer(call, {...booking, state: 'failed', seed: null,
+                    error: {code: 'booking_failed', message: 'fresh-seed booking failed: no code'}});
+      await settle();
+      return look(world);
+    })();
+    // Unticking hands the seed field back.
+    world.el('fresh_seed').checked = false;
+    world.el('fresh_seed').fire('change');
+    const unticked = {seed_disabled: world.el('seed').disabled,
+                      hint: world.el('seed-hint').textContent};
+    return {body: post.body, before, ticked, unticked, while_booking, booked, finished};
+  },
+
+  /* F9: stage 2's order/band controls are a view, not another analysis. */
+  async distinct_view() {
+    const world = await start();
+    await pick(world, 'RUN_A', 'succeeded');
+    press(world, 's2-run');
+    await settle();
+    answer(take(world, '/api/distinct'), bandedReport('RUN_A'));
+    await settle();
+    const set = (id, value) => { world.el(id).value = value; world.el(id).fire('input'); };
+    const copy = () => { world.copied.length = 0; world.el('s2-copy-all').fire('click');
+                         return world.copied[0]; };
+
+    const initial = {...look(world), copied: copy()};
+    set('s2-order', 'desc');
+    const highest = {...look(world), copied: copy()};
+    set('s2-order', 'asc');
+    set('s2-min', '10');
+    set('s2-max', '1000');
+    const banded = {...look(world), copied: copy(), copy_disabled: world.el('s2-copy-all').disabled};
+    set('s2-max', '');
+    set('s2-min', '900000');                 // a real band that nothing reaches
+    const empty = {...look(world), copied: copy(), copy_disabled: world.el('s2-copy-all').disabled};
+    set('s2-min', '1000');
+    set('s2-max', '10');
+    const inverted = look(world);
+
+    // Stage 3 must still see every distinct code, not the three on screen.
+    set('s2-min', '');
+    set('s2-max', '1000');
+    press(world, 's3-run');
+    await settle();
+    const request = take(world, '/api/decorrelate');
+    answer(request, {...selectionReport('RUN_A'),
+                     selection: {...selectionReport('RUN_A').selection,
+                                 selected_codes: ['LOW111', 'MID222', 'HIGH33', 'NOPRICE']}});
+    await settle();
+    const with_stage3 = {subset: world.el('s3-subset').text,
+                         s2_shown: shownCodes(world), request_body: request.body};
+
+    world.el('s2-view-reset').fire('click');
+    const reset = look(world);
+
+    // The band belongs to this provider's view, and a new run starts clean.
+    const kept = await (async () => {
+      set('s2-max', '1000');
+      await switchTo(world, 'sportybet');
+      answer(take(world, '/api/runs'), {runs: []});
+      await settle();
+      const away = {s2_cards: world.el('s2-cards').childNodes.length,
+                    max: world.el('s2-max').value};
+      await switchTo(world, 'bet9ja');
+      answer(take(world, '/api/runs'), {runs: []});
+      await settle();
+      return {away, back: {...look(world), max: world.el('s2-max').value}};
+    })();
+    await pick(world, 'RUN_B', 'succeeded');
+    press(world, 's2-run');
+    await settle();
+    answer(take(world, '/api/distinct'), bandedReport('RUN_B'));
+    await settle();
+    const new_run = {...look(world), max: world.el('s2-max').value};
+
+    return {initial, highest, banded, empty, inverted, with_stage3, reset, kept, new_run};
+  },
+
+  /* F10: a succeeded run lists every code it found, before stage 2 is asked. */
+  async all_codes() {
+    const world = await start();
+    const s1 = () => ({
+      hidden: world.el('s1-codes').hidden,
+      note: world.el('s1-count').textContent,
+      shown: world.el('s1-cards').childNodes
+        .map(card => card.childNodes[0].childNodes[0].childNodes[1].textContent),
+      error: world.el('s1-codes-error').textContent,
+      controls_hidden: world.el('s1-view').hidden,
+      copy_disabled: world.el('s1-copy-all').disabled,
+      asks: world.pending.filter(c => c.url.includes('/api/codes')).length,
+    });
+    const set = (id, value) => { world.el(id).value = value; world.el(id).fire('input'); };
+    const copy = () => { world.copied.length = 0; world.el('s1-copy-all').fire('click');
+                         return world.copied[0]; };
+
+    // A run still scanning lists what its worker has saved so far...
+    const partial = (run_id, state) => ({...codesReport(run_id), partial: true, state, pool_size: 2,
+                                         codes: [ticket('MID222', 400), ticket('LOW111', 9)]});
+    await pick(world, 'RUN_A', 'running');
+    answer(take(world, '/api/codes'), partial('RUN_A', 'running'));
+    await settle();
+    const scanning = s1();
+    // ...and does not ask again while its qualifying count stands still.
+    for (const fire of [...world.timers.values()]) fire();
+    await settle();
+    answer(take(world, '/api/scan/RUN_A'), runStatus('RUN_A', 'running'));
+    await settle();
+    const unchanged = s1();
+    for (const fire of [...world.timers.values()]) fire();
+    await settle();
+    answer(take(world, '/api/scan/RUN_A'), runStatus('RUN_A', 'succeeded'));
+    await settle();
+    const asked = {...s1(), body: world.pending.find(c => c.url.includes('/api/codes')).body};
+    answer(take(world, '/api/codes'), codesReport('RUN_A'));
+    await settle();
+    const listed = {...s1(), copied: copy(), s2_cards: world.el('s2-cards').childNodes.length,
+                    s2_locked: world.el('s2-fields').disabled};
+
+    set('s1-order', 'desc');
+    const highest = s1();
+    set('s1-order', 'asc');
+    set('s1-max', '1000');
+    const banded = {...s1(), copied: copy()};
+
+    // Its band is its own: stage 2 lists every distinct code regardless.
+    press(world, 's2-run');
+    await settle();
+    answer(take(world, '/api/distinct'), bandedReport('RUN_A'));
+    await settle();
+    const beside_stage2 = {s1: s1().shown, s2: shownCodes(world), s2_max: world.el('s2-max').value};
+
+    // Remembered per provider: coming back repaints it without asking again.
+    await switchTo(world, 'sportybet');
+    answer(take(world, '/api/runs'), {runs: []});
+    await settle();
+    const away = s1();
+    await switchTo(world, 'bet9ja');
+    answer(take(world, '/api/runs'), {runs: []});
+    await settle();
+    const back = {...s1(), max: world.el('s1-max').value};
+    world.el('s1-view-reset').fire('click');
+    const reset = s1();
+
+    // Another run replaces the list; a run with nothing in band says so.
+    await pick(world, 'RUN_B', 'succeeded');
+    const replaced = s1();
+    answer(take(world, '/api/codes'), {...codesReport('RUN_B'), pool_size: 0, codes: [],
+                                       excluded: [{reason: 'below odds band'}]});
+    await settle();
+    const none = s1();
+
+    // A run that stopped early keeps what it saved; one with nothing saved stays quiet.
+    await pick(world, 'RUN_C', 'failed');
+    answer(take(world, '/api/codes'), partial('RUN_C', 'failed'));
+    await settle();
+    const failed_run = s1();
+    await pick(world, 'RUN_E', 'cancelled');
+    answer(take(world, '/api/codes'), {error: {message: 'run RUN_E has no saved codes'}}, 409);
+    await settle();
+    const nothing_saved = s1();
+    // A succeeded run owes a list, so a refusal there is reported.
+    await pick(world, 'RUN_D', 'succeeded');
+    answer(take(world, '/api/codes'), {error: {message: 'Cannot parse committed extract'}}, 422);
+    await settle();
+    const refused = s1();
+    return {scanning, unchanged, nothing_saved, asked, listed, highest, banded, beside_stage2, away, back, reset,
+            replaced, none, failed_run, refused};
+  },
+
   async submission_switches() {
     const result = {};
     for (const timing of ['away', 'returned', 'failed']) {

@@ -13,6 +13,7 @@ main{max-width:1120px;margin:auto;padding:24px 24px 64px}
 .panel{background:#fff;border:1px solid #dce4dc;border-radius:14px;margin-bottom:18px;padding:22px}
 .panel[aria-disabled=true]{opacity:.62}
 h2{font-size:19px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+h3{font-size:15px;margin:22px 0 0}
 .step{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#123e35;color:#fff;font-size:13px;font-weight:700}
 fieldset{border:0;margin:0;padding:0}
 .grid{display:flex;gap:14px;align-items:end;flex-wrap:wrap;margin-top:14px}
@@ -48,6 +49,8 @@ th{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6c64;ba
 th,td{padding:10px 9px;border-bottom:1px solid #e7ece4;vertical-align:top}
 td small{display:block;color:#67796d;margin-top:4px}td.n{text-align:right}
 details.more{margin-top:16px}details.more>summary{cursor:pointer;font-weight:600;font-size:13px;color:#294d3d}
+label.check{max-width:270px}label.check .row{display:flex;align-items:center;gap:9px;min-height:44px}
+label.check input{width:18px;height:18px;min-width:0;min-height:0;flex:none;accent-color:#1c5344}
 noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin-bottom:18px}
 @media(max-width:700px){h1{font-size:26px}main{padding:16px 12px 48px}.panel{padding:16px}
 .ticket summary{grid-template-columns:1fr 86px;gap:10px}.chev{display:none}label{width:100%}input,select{width:100%}}
@@ -63,12 +66,14 @@ noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin
 
 <section class="panel" id="s1" aria-labelledby="s1-h">
   <h2 id="s1-h"><span class="step">1</span> Harvest</h2>
-  <p class="notice">Scans run as a separate worker process, one at a time per provider. Mutation depth is fixed at 3.</p>
+  <p class="notice">Scans run as a separate worker process, one at a time per provider. Mutation depth is fixed at 3.
+  Booking a fresh code opens a real browser against the provider and takes a while before the scan itself starts; it books a coupon, it never stakes money.</p>
   <form id="scan-form">
     <fieldset id="s1-fields">
       <div class="grid">
         <label>Provider<select id="provider"><option value="bet9ja">bet9ja</option><option value="sportybet">sportybet</option></select></label>
         <label>Seed code<span id="seed-hint">7 characters, case kept</span><input id="seed" autocapitalize="off" autocomplete="off" spellcheck="false" required></label>
+        <label class="check"><span class="row"><input id="fresh_seed" type="checkbox">Book a fresh code</span><span>The run opens the provider in a browser, books one coupon, and scans from that code.</span></label>
         <label>Min odds<span>blank = no floor</span><input id="min_odds" type="number" min="0" step="any"></label>
         <label>Max odds<span>blank = 350,000</span><input id="max_odds" type="number" min="0" step="any"></label>
         <label>How many codes<span>blank/0 = uncapped</span><input id="want_count" type="number" min="0" step="1"></label>
@@ -83,6 +88,22 @@ noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin
   <p class="error" id="s1-error" hidden></p>
   <p class="notice" id="s1-state" role="status" aria-live="polite">No run yet.</p>
   <ul class="facts" id="s1-counters" hidden></ul>
+  <div id="s1-codes" hidden>
+    <h3>All codes from this run</h3>
+    <p class="error" id="s1-codes-error" hidden></p>
+    <p class="notice" id="s1-band" hidden></p>
+    <fieldset id="s1-view" hidden>
+      <div class="grid">
+        <label>Order<span>unpriced codes sit last either way</span><select id="s1-order"><option value="asc">Lowest odds first</option><option value="desc">Highest odds first</option></select></label>
+        <label>From odds<span>blank = no floor</span><input id="s1-min" type="number" min="0" step="any"></label>
+        <label>To odds<span>blank = no ceiling</span><input id="s1-max" type="number" min="0" step="any"></label>
+        <button id="s1-view-reset" type="button">Show all</button>
+      </div>
+    </fieldset>
+    <div class="bar" id="s1-bar" hidden><p id="s1-count"></p><button id="s1-copy-all" type="button">Copy shown codes</button></div>
+    <div id="s1-cards"></div>
+    <div class="bar" id="s1-pager" hidden><button id="s1-prev" type="button">‹ Prev</button><p id="s1-page-info"></p><button id="s1-next" type="button">Next ›</button></div>
+  </div>
   <details class="more" id="s1-history"><summary>Earlier runs on this machine</summary>
     <div class="grid">
       <label>Run<select id="runs"><option value="">— none loaded —</option></select></label>
@@ -102,8 +123,17 @@ noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin
   <p class="error" id="s2-error" hidden></p>
   <ul class="facts" id="s2-facts" hidden></ul>
   <p class="notice" id="s2-band" hidden></p>
-  <div class="bar" id="s2-bar" hidden><p id="s2-count"></p><button id="s2-copy-all" type="button">Copy all codes</button></div>
+  <fieldset id="s2-view" hidden>
+    <div class="grid">
+      <label>Order<span>unpriced codes sit last either way</span><select id="s2-order"><option value="asc">Lowest odds first</option><option value="desc">Highest odds first</option></select></label>
+      <label>From odds<span>blank = no floor</span><input id="s2-min" type="number" min="0" step="any"></label>
+      <label>To odds<span>blank = no ceiling</span><input id="s2-max" type="number" min="0" step="any"></label>
+      <button id="s2-view-reset" type="button">Show all</button>
+    </div>
+  </fieldset>
+  <div class="bar" id="s2-bar" hidden><p id="s2-count"></p><button id="s2-copy-all" type="button">Copy shown codes</button></div>
   <div id="s2-cards"></div>
+  <div class="bar" id="s2-pager" hidden><button id="s2-prev" type="button">‹ Prev</button><p id="s2-page-info"></p><button id="s2-next" type="button">Next ›</button></div>
   <details class="more" id="s2-more" hidden><summary>Most-reused game + option</summary><div class="scroll" id="s2-top"></div></details>
 </section>
 
@@ -117,7 +147,7 @@ noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin
       <button class="go" id="s3-run" type="button">Select de-correlated set</button>
     </div>
   </fieldset>
-  <p class="notice">Stage 3 always runs on the run's full eligible pool, overlapping codes included — not on stage 2's distinct list.</p>
+  <p class="notice">Stage 3 always runs on the run's full eligible pool, overlapping codes included — not on stage 2's distinct list, and not on whatever stage 2's order/band controls are showing.</p>
   <p class="error" id="s3-error" hidden></p>
   <ul class="facts" id="s3-facts" hidden></ul>
   <p class="notice" id="s3-band" hidden></p>
@@ -147,7 +177,7 @@ let view = blankView();                 // the run and the two analyses now show
 let gen = 0;                            // bumped whenever the selection changes
 let poller = null, pollGen = -1;
 let historyRequest = 0;
-const analysisRequest = {s2: null, s3: null};
+const analysisRequest = {s1: null, s2: null, s3: null};
 
 /* Every reply is checked against the generation it was issued under. Anything in
    flight when the user picks another run or provider belongs to the selection they
@@ -155,7 +185,7 @@ const analysisRequest = {s2: null, s3: null};
 function invalidate() {
   gen += 1;
   stopPolling();
-  analysisRequest.s2 = analysisRequest.s3 = null;
+  analysisRequest.s1 = analysisRequest.s2 = analysisRequest.s3 = null;
   $('s2-run').disabled = $('s3-run').disabled = false;
 }
 
@@ -253,15 +283,45 @@ function lock(stage, locked, note) {
 
 /* ---------- stage 1: harvest ---------- */
 
+/* The seed field and the fresh-seed box are one control: exactly one of them
+   supplies the seed, so ticking the box takes the text input out of play (a
+   disabled input is also skipped by form validation, which is why `required`
+   can stay on it). */
 function seedHint() {
-  $('seed-hint').textContent = $('provider').value === 'bet9ja'
-    ? '7 characters, case kept' : '6 characters, upper-cased';
+  const fresh = $('fresh_seed').checked;
+  $('seed').disabled = fresh;
+  $('seed-hint').textContent = fresh
+    ? 'booked for you when the run starts'
+    : ($('provider').value === 'bet9ja' ? '7 characters, case kept' : '6 characters, upper-cased');
 }
 
 /* One view per provider. Switching providers never leaves the other provider's run,
    poller or analysis on screen, and never mixes the two: the outgoing view is stashed
    whole and the incoming one is repainted from its own remembered reports. */
-function blankView() { return {run: null, stage2: null, stage3: null, submission: null, error: null}; }
+/* How stage 2's list is being looked at. Kept with the rest of the provider's
+   view, so switching away and back shows the same list, not a reset one. */
+function blankPrefs() { return {order: 'asc', min: null, max: null}; }
+function blankView() { return {run: null, codes: null, codesAsked: null, stage2: null, stage3: null, submission: null,
+                               error: null, prefs: blankPrefs(), codesPrefs: blankPrefs(), codesPage: 0, page: 0}; }
+
+/* Pagination is purely a slice of whatever `arrange()` already produced, so it
+   never changes what counts as distinct or what a band/order selects -- only
+   how many of those rows are drawn into the DOM at once. */
+const PAGE_SIZE = 25;
+function paginate(rows, page) {
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const clamped = Math.min(Math.max(0, page), totalPages - 1);
+  const start = clamped * PAGE_SIZE;
+  return {pageRows: rows.slice(start, start + PAGE_SIZE), totalPages, page: clamped};
+}
+
+function renderPager(stage, page, totalPages, total) {
+  const bar = $(stage + '-pager');
+  bar.hidden = total <= PAGE_SIZE;
+  $(stage + '-page-info').textContent = `Page ${page + 1} of ${totalPages} (${PAGE_SIZE} per page)`;
+  $(stage + '-prev').disabled = page <= 0;
+  $(stage + '-next').disabled = page >= totalPages - 1;
+}
 
 function clearRun() {
   view.run = null;
@@ -274,7 +334,7 @@ function clearRun() {
 }
 
 function restore() {
-  const {run, stage2, stage3} = view;
+  const {run, codes, codesAsked, stage2, stage3, prefs, codesPrefs} = view;
   clearRun();
   clearAnalysis();
   $('s2-run').disabled = false;
@@ -283,8 +343,16 @@ function restore() {
     showRun(run);                 // repaint stage 1 from the remembered status...
     if (ACTIVE.has(run.state)) startPolling();   // ...and poll again if it is still live
   }
-  view.stage2 = stage2;           // showRun's run-change reset cleared these
+  view.codes = codes;             // showRun's run-change reset cleared these
+  view.codesAsked = codesAsked;
+  view.stage2 = stage2;
   view.stage3 = stage3;
+  view.prefs = prefs || blankPrefs();
+  view.codesPrefs = codesPrefs || blankPrefs();
+  writePrefs('s2', view.prefs);
+  writePrefs('s1', view.codesPrefs);
+  if (codes) renderCodes(codes);
+  loadCodes();                    // a no-op unless the run moved on while away
   if (stage2) {
     renderDistinct(stage2);
     lock('s3', false, stage3Note(stage2));
@@ -310,9 +378,19 @@ function switchProvider() {
   refreshRuns();
 }
 
+/* A fresh-seed run has no seed until its worker books one, so "booking…" is
+   the honest reading of a null seed while the run is still live; a null seed
+   on a finished run means it never got one. */
+function seedText(status) {
+  if (status.seed) return status.seed;
+  if (!(status.request || {}).fresh_seed) return '—';
+  return ACTIVE.has(status.state) ? 'booking…' : 'never booked';
+}
+
 function counterRows(status) {
   const c = status.counters || {};
-  return [['State', status.state], ['Tried', num(c.tried)], ['Valid', num(c.found_ok)],
+  return [['State', status.state], ['Seed', seedText(status)],
+          ['Tried', num(c.tried)], ['Valid', num(c.found_ok)],
           ['Qualifying', num(c.qualifying)], ['Simulated out', num(c.excluded_simulations)],
           ['Unpriced', num(c.unpriced)]];
 }
@@ -325,6 +403,9 @@ function showRun(status) {
   view.run = status;
   facts('s1-counters', counterRows(status));
   const parts = [`Run ${status.run_id} (${status.provider}) is ${status.state}`];
+  if (status.seed) parts.push(`seed ${status.seed}`);
+  else if ((status.request || {}).fresh_seed && ACTIVE.has(status.state))
+    parts.push('booking a fresh code in the browser');
   if (status.stop_reason) parts.push(`stop reason: ${status.stop_reason}`);
   if (status.error) parts.push(`error: ${status.error.message || status.error}`);
   if (status.recovery_note) parts.push(status.recovery_note);
@@ -360,6 +441,7 @@ async function tick() {
     const status = await api('GET', '/api/scan/' + encodeURIComponent(run_id));
     if (mine !== gen) return;
     showRun(status);
+    loadCodes();
     if (!ACTIVE.has(status.state)) stopPolling();
   } catch (e) {
     if (mine !== gen) return;
@@ -391,7 +473,9 @@ async function startScan(event) {
   fail('s1-error', '');
   let body;
   try {
-    body = {provider: $('provider').value, seed: $('seed').value.trim()};
+    body = {provider: $('provider').value};
+    if ($('fresh_seed').checked) body.fresh_seed = true;
+    else body.seed = $('seed').value.trim();
     for (const [key, value] of Object.entries({
       min_odds: optionalNumber('min_odds', 'Min odds'),
       max_odds: optionalNumber('max_odds', 'Max odds'),
@@ -408,7 +492,7 @@ async function startScan(event) {
   const owner = view, token = {};
   owner.submission = token;
   owner.error = null;
-  owner.run = owner.stage2 = owner.stage3 = null;
+  owner.run = owner.codes = owner.codesAsked = owner.stage2 = owner.stage3 = null;
   restore();
   try {
     const status = await api('POST', '/api/scan', body);
@@ -439,6 +523,7 @@ async function cancelScan() {
     const status = await api('POST', `/api/scan/${encodeURIComponent(run_id)}/cancel`, {});
     if (mine !== gen || !view.run || view.run.run_id !== run_id) return;
     showRun(status);
+    loadCodes();
     if (ACTIVE.has(status.state)) startPolling();
   } catch (e) {
     if (mine !== gen) return;
@@ -462,7 +547,7 @@ async function refreshRuns() {
     select.replaceChildren(node('option', history.runs.length ? '— pick a run —' : '— no runs yet —'));
     select.firstChild.value = '';
     for (const status of history.runs.filter(status => status.provider === which)) {
-      const option = node('option', `${status.run_id} · ${status.state} · seed ${(status.request || {}).seed || '?'}`);
+      const option = node('option', `${status.run_id} · ${status.state} · seed ${seedText(status)}`);
       option.value = status.run_id;
       select.append(option);
     }
@@ -487,10 +572,95 @@ async function loadRun() {
     if (mine !== gen) return;
     if (status.provider !== provider) throw new Error('Run belongs to another provider. Refresh the history list.');
     showRun(status);              // clears both stages, since the run id changed
+    loadCodes();
     if (ACTIVE.has(status.state)) startPolling();
   } catch (e) {
     if (mine !== gen) return;
     fail('s1-error', e.message);
+  }
+}
+
+/* ---------- stage 1: every code the run found ---------- */
+
+/* The whole eligible pool, listed before any analysis is asked for: from the
+   committed extract once the run succeeds, and until then from what the worker
+   has saved so far (`partial`), which is also all that survives a run that
+   fails or is cancelled. Nothing here is judged distinct or overlapping --
+   that is stage 2's job -- and its order/band controls are a view over this
+   list only, exactly as stage 2's are over its own. */
+function renderCodes(report) {
+  const basis = report.odds_basis;
+  const prefs = view.codesPrefs || blankPrefs();
+  $('s1-codes').hidden = false;
+  $('s1-band').textContent = bandText(report);
+  $('s1-band').hidden = false;
+  $('s1-view').hidden = !report.pool_size;
+
+  const shown = arrange(report.codes, basis, prefs);
+  const codes = shown.rows.map(([ticket]) => bareCode(ticket));
+  const state = view.run ? view.run.state : report.state;
+  const lead = !report.partial
+    ? `${report.pool_size} code(s) in this run's odds band, overlapping ones included.`
+    : ACTIVE.has(state)
+      ? `${report.pool_size} code(s) saved so far, overlapping ones included. The scan is still running; this list grows as more are saved.`
+      : `The scan stopped early (${state}). ${report.pool_size} code(s) were saved before it stopped, overlapping ones included.`;
+  const parts = report.pool_size ? [lead, ...viewNote(report.pool_size, prefs, shown)]
+    : [report.partial ? 'No codes saved yet.' : 'This run found no codes in its odds band.'];
+  if (report.excluded.length) parts.push(`${report.excluded.length} extract row(s) were excluded from the pool.`);
+  $('s1-count').textContent = parts.join(' ');
+  $('s1-bar').hidden = false;
+  $('s1-copy-all').onclick = () => Copy.button($('s1-copy-all'), codes.join('\n'),
+    {copied: 'Copied', empty: 'No codes shown', label: 'The booking codes shown, to copy'});
+  $('s1-copy-all').disabled = !codes.length;
+
+  const {pageRows, totalPages, page} = paginate(shown.rows, view.codesPage || 0);
+  view.codesPage = page;
+  const cards = $('s1-cards');
+  cards.replaceChildren();
+  for (const [ticket] of pageRows) {
+    cards.append(ticketCard(bareCode(ticket),
+      [['Legs', String(ticket.num_legs)], ['Odds', num(oddsOf(ticket, basis))]],
+      () => legTable(ticket.legs)));
+  }
+  renderPager('s1', page, totalPages, shown.rows.length);
+}
+
+/* Asked whenever the run has something new to list: once when it succeeds,
+   and before that each time its qualifying count or state moves, so a scan
+   still going -- or one that failed or was cancelled -- shows what it saved.
+   codesAsked remembers the last question, answered or refused, so the same
+   one is never put twice. */
+function codesStamp(run) { return [run.run_id, run.state, (run.counters || {}).qualifying].join('|'); }
+
+async function loadCodes() {
+  const run = view.run;
+  if (!run || analysisRequest.s1) return;
+  const done = run.state === 'succeeded';
+  if (!done && !((run.counters || {}).qualifying > 0)) return;
+  const stamp = codesStamp(run);
+  if (view.codesAsked === stamp) return;
+  view.codesAsked = stamp;
+  const mine = gen, run_id = run.run_id;
+  const request = {};
+  analysisRequest.s1 = request;
+  fail('s1-codes-error', '');
+  try {
+    const report = await api('POST', '/api/codes', {run_id});
+    if (mine !== gen || !view.run || view.run.run_id !== run_id) return;
+    view.codes = report;
+    renderCodes(report);
+  } catch (e) {
+    if (mine !== gen || !view.run || view.run.run_id !== run_id) return;
+    // A run that has not finished may simply have nothing saved; only a
+    // succeeded run owes a list, so only that failure is worth reporting.
+    if (!done) return;
+    $('s1-codes').hidden = false;
+    fail('s1-codes-error', `Could not list this run's codes: ${e.message}`);
+  } finally {
+    if (analysisRequest.s1 === request) {
+      analysisRequest.s1 = null;
+      if (mine === gen) loadCodes();     // the run may have moved on meanwhile
+    }
   }
 }
 
@@ -499,8 +669,11 @@ async function loadRun() {
 const stage3Note = report => `Ready on the same eligible pool as stage 2 (${report.pool_size} code(s)).`;
 
 function clearAnalysis() {               // the DOM only; the remembered reports survive
+  $('s1-cards').replaceChildren();
+  for (const id of ['s1-codes', 's1-band', 's1-view', 's1-bar', 's1-pager']) $(id).hidden = true;
+  fail('s1-codes-error', '');
   $('s2-cards').replaceChildren();
-  for (const id of ['s2-facts', 's2-band', 's2-bar', 's2-more']) $(id).hidden = true;
+  for (const id of ['s2-facts', 's2-band', 's2-view', 's2-bar', 's2-more', 's2-pager']) $(id).hidden = true;
   fail('s2-error', '');
   lock('s3', true, 'Locked until stage 2 has a result for this run.');
   $('s3-cards').replaceChildren();
@@ -509,8 +682,16 @@ function clearAnalysis() {               // the DOM only; the remembered reports
 }
 
 function resetAnalysis() {               // the analysis is gone, not just off screen
+  view.codes = null;
+  view.codesAsked = null;
   view.stage2 = null;
   view.stage3 = null;
+  view.prefs = blankPrefs();             // a new analysis starts unfiltered
+  view.codesPrefs = blankPrefs();
+  view.page = 0;
+  view.codesPage = 0;
+  writePrefs('s2', view.prefs);
+  writePrefs('s1', view.codesPrefs);
   clearAnalysis();
 }
 
@@ -558,35 +739,99 @@ function ticketCard(code, columns, detail) {
   return card;
 }
 
+/* The order/band controls are a VIEW over the analysis, never the analysis.
+   Distinctness is a property of the whole eligible pool -- a code can be
+   distinct only because the code it overlaps is in that pool -- so narrowing
+   the pool first would quietly change what "distinct" means. These controls
+   decide what is listed and copied here and nothing else: stage 3 and the
+   stage-2 subset check keep reading the full report. */
+function readPrefs(stage) {
+  const bound = id => {
+    const raw = $(id).value.trim();
+    if (raw === '') return null;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  };
+  return {order: $(stage + '-order').value === 'desc' ? 'desc' : 'asc',
+          min: bound(stage + '-min'), max: bound(stage + '-max')};
+}
+
+function writePrefs(stage, prefs) {
+  $(stage + '-order').value = prefs.order === 'desc' ? 'desc' : 'asc';
+  $(stage + '-min').value = prefs.min == null ? '' : String(prefs.min);
+  $(stage + '-max').value = prefs.max == null ? '' : String(prefs.max);
+}
+
+function arrange(tickets, basis, prefs) {
+  const rows = tickets.map((ticket, index) => [ticket, index, oddsOf(ticket, basis)]);
+  const banded = prefs.min == null && prefs.max == null ? rows.slice()
+    // A banded list can only contain codes whose odds are known, so unpriced
+    // ones drop out here; the count line says how many did.
+    : rows.filter(([, , odds]) => odds != null
+        && (prefs.min == null || odds >= prefs.min)
+        && (prefs.max == null || odds <= prefs.max));
+  const sign = prefs.order === 'desc' ? -1 : 1;
+  banded.sort((a, b) => {
+    if (a[2] === b[2]) return a[1] - b[1];       // stable within equal odds
+    if (a[2] == null) return 1;                  // unpriced last in either order
+    if (b[2] == null) return -1;
+    return sign * (a[2] - b[2]);
+  });
+  const banding = prefs.min != null || prefs.max != null;
+  return {rows: banded, banding,
+          droppedUnpriced: banding ? rows.filter(row => row[2] == null).length : 0};
+}
+
+/* What the order/band controls are doing to a list of `total` codes. */
+function viewNote(total, prefs, shown) {
+  const order = prefs.order === 'desc' ? 'highest odds first' : 'lowest odds first';
+  if (!shown.banding) return [`Listed ${order}.`];
+  if (prefs.min != null && prefs.max != null && prefs.min > prefs.max)
+    return [`"From odds" is above "To odds", so nothing matches.`];
+  const band = prefs.min == null ? `up to ${num(prefs.max)}`
+    : prefs.max == null ? `from ${num(prefs.min)} up` : `${num(prefs.min)} to ${num(prefs.max)}`;
+  const parts = [`Showing ${shown.rows.length} of ${total} with odds ${band}, ${order}.`];
+  if (shown.droppedUnpriced)
+    parts.push(`${shown.droppedUnpriced} unpriced code(s) cannot match a band and are hidden.`);
+  return parts;
+}
+
+function listNote(report, prefs, shown) {
+  const parts = [`${report.distinct_codes} code(s) share zero game+option with any other code in the pool.`,
+                 ...viewNote(report.distinct_codes, prefs, shown)];
+  parts.push(`${report.excluded.length} extract row(s) were excluded from the pool.`);
+  return parts.join(' ');
+}
+
 function renderDistinct(report) {
   const basis = report.odds_basis;
-  const codes = report.distinct.map(bareCode);
+  const prefs = view.prefs || blankPrefs();
   facts('s2-facts', [['In extract', num(report.input_count)], ['Eligible pool', num(report.pool_size)],
                      ['Distinct', num(report.distinct_codes)], ['Overlapping', num(report.overlapping_codes)],
                      ['Shared legs', num(report.shared_legs)]]);
   $('s2-band').textContent = bandText(report);
   $('s2-band').hidden = false;
-  $('s2-count').textContent = `${report.distinct_codes} code(s) share zero game+option with any other code in the pool`
-    + `, lowest odds first. ${report.excluded.length} extract row(s) were excluded from the pool.`;
+  $('s2-view').hidden = false;
+
+  const shown = arrange(report.distinct, basis, prefs);
+  const codes = shown.rows.map(([ticket]) => bareCode(ticket));
+  $('s2-count').textContent = listNote(report, prefs, shown);
   $('s2-bar').hidden = false;
+  // Copy what is on screen: a filtered list that copied all 94 would be a lie.
   $('s2-copy-all').onclick = () => Copy.button($('s2-copy-all'), codes.join('\n'),
-    {copied: 'All copied', label: 'All distinct booking codes to copy'});
+    {copied: 'Copied', empty: 'No codes shown', label: 'The distinct booking codes shown, to copy'});
   $('s2-copy-all').disabled = !codes.length;
 
-  const ordered = report.distinct.map((t, i) => [t, i]).sort((a, b) => {
-    const x = oddsOf(a[0], basis), y = oddsOf(b[0], basis);
-    if (x === y) return a[1] - b[1];
-    if (x == null) return 1;
-    if (y == null) return -1;
-    return x - y;
-  });
+  const {pageRows, totalPages, page} = paginate(shown.rows, view.page || 0);
+  view.page = page;
   const cards = $('s2-cards');
   cards.replaceChildren();
-  for (const [ticket] of ordered) {
+  for (const [ticket] of pageRows) {
     cards.append(ticketCard(bareCode(ticket),
       [['Legs', String(ticket.num_legs)], ['Odds', num(oddsOf(ticket, basis))]],
       () => legTable(ticket.legs)));
   }
+  renderPager('s2', page, totalPages, shown.rows.length);
 
   const top = node('table');
   top.append(head(['Game + option', 'In codes']));
@@ -750,9 +995,53 @@ async function decorrelate() {
 $('scan-form').addEventListener('submit', startScan);
 $('s1-cancel').addEventListener('click', cancelScan);
 $('provider').addEventListener('change', switchProvider);
+$('fresh_seed').addEventListener('change', seedHint);
 $('runs-refresh').addEventListener('click', refreshRuns);
 $('runs-load').addEventListener('click', loadRun);
 $('s2-run').addEventListener('click', findDistinct);
+
+/* Re-listing is a repaint of the report already in hand: no request is made,
+   so changing the order or the band can never race a reply or unlock a stage. */
+function relist() {
+  view.prefs = readPrefs('s2');
+  view.page = 0;
+  if (view.stage2) renderDistinct(view.stage2);
+}
+for (const id of ['s2-order', 's2-min', 's2-max']) $(id).addEventListener('input', relist);
+$('s2-view-reset').addEventListener('click', () => {
+  view.prefs = blankPrefs();
+  writePrefs('s2', view.prefs);
+  view.page = 0;
+  if (view.stage2) renderDistinct(view.stage2);
+});
+function relistCodes() {
+  view.codesPrefs = readPrefs('s1');
+  view.codesPage = 0;
+  if (view.codes) renderCodes(view.codes);
+}
+for (const id of ['s1-order', 's1-min', 's1-max']) $(id).addEventListener('input', relistCodes);
+$('s1-view-reset').addEventListener('click', () => {
+  view.codesPrefs = blankPrefs();
+  writePrefs('s1', view.codesPrefs);
+  view.codesPage = 0;
+  if (view.codes) renderCodes(view.codes);
+});
+$('s1-prev').addEventListener('click', () => {
+  view.codesPage = Math.max(0, (view.codesPage || 0) - 1);
+  if (view.codes) renderCodes(view.codes);
+});
+$('s1-next').addEventListener('click', () => {
+  view.codesPage = (view.codesPage || 0) + 1;
+  if (view.codes) renderCodes(view.codes);
+});
+$('s2-prev').addEventListener('click', () => {
+  view.page = Math.max(0, (view.page || 0) - 1);
+  if (view.stage2) renderDistinct(view.stage2);
+});
+$('s2-next').addEventListener('click', () => {
+  view.page = (view.page || 0) + 1;
+  if (view.stage2) renderDistinct(view.stage2);
+});
 $('s3-run').addEventListener('click', decorrelate);
 $('max_exposure').addEventListener('input', () => {
   if (Number($('max_exposure').value) < 1) $('max_exposure').value = '1';

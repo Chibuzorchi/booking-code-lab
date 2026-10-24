@@ -2,6 +2,7 @@
 import http.client
 import io
 import json
+import os
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
@@ -83,18 +84,52 @@ class APITests(RegistryTestBase):
         base = {'provider': 'sportybet', 'seed': 'ABC123'}
         cases = [{'want_count': True}, {'try_budget': 0}, {'try_budget': 1.5}, {'min_odds': -1}, {'min_odds': 0.5},
                  {'max_odds': 2, 'min_odds': 3}, {'provider': []}, {'seed': '--help'},
-                 {'env_extra': {}}, {'extract_path': '/tmp/anything'}, {'fresh_seed': 'yes'}]
+                 {'env_extra': {}}, {'extract_path': '/tmp/anything'}, {'fresh_seed': 'yes'},
+                 {'fresh_seed': 1}, {'fresh_seed': True}]  # a seed alongside fresh_seed
         with patch.object(self.reg, 'start_scan') as start:
             for change in cases:
                 self.assertEqual(self.request('POST', '/api/scan', {**base, **change})[0], 400, change)
-            self.assertEqual(self.request('POST', '/api/scan', {**base, 'fresh_seed': True})[0], 501)
             start.assert_not_called()
 
     def test_scan_defaults_and_translation(self):
         with patch.object(self.reg, 'start_scan', return_value={'run_id': 'fake'}) as start:
             self.assertEqual(self.request('POST', '/api/scan', {'provider': 'sportybet', 'seed': 'abc123', 'min_odds': 0})[0], 202)
-            start.assert_called_once_with(provider='sportybet', seed='ABC123', min_odds=1,
-                                          max_odds=350000, max_qualifying=0, max_codes=25000, depth=3)
+            start.assert_called_once_with(provider='sportybet', seed='ABC123', fresh_seed=False,
+                                          min_odds=1, max_odds=350000, max_qualifying=0,
+                                          max_codes=25000, depth=3)
+
+    def test_fresh_seed_scan_books_its_own_code(self):
+        with patch.object(self.reg, 'start_scan', return_value={'run_id': 'fake'}) as start:
+            status, _ = self.request('POST', '/api/scan', {'provider': 'bet9ja', 'fresh_seed': True})
+            self.assertEqual(status, 202)
+            start.assert_called_once_with(provider='bet9ja', seed=None, fresh_seed=True,
+                                          min_odds=1, max_odds=350000, max_qualifying=0,
+                                          max_codes=25000, depth=3)
+        # An empty seed field alongside the checkbox is the console's own shape.
+        with patch.object(self.reg, 'start_scan', return_value={'run_id': 'fake'}) as start:
+            self.assertEqual(self.request('POST', '/api/scan', {'provider': 'bet9ja', 'seed': '', 'fresh_seed': True})[0], 202)
+            self.assertIsNone(start.call_args.kwargs['seed'])
+
+    def test_fresh_seed_run_end_to_end(self):
+        os.environ['FIXTURE_BOOKED_SEED'] = 'BK9JA07'
+        status, run = self.request('POST', '/api/scan', {'provider': 'bet9ja', 'fresh_seed': True})
+        self.assertEqual(status, 202, run)
+        self.assertIsNone(run['seed'])  # still booking
+        self.wait_state(self.reg, run['run_id'], {'succeeded'})
+        status, final = self.request('GET', '/api/scan/' + run['run_id'])
+        self.assertEqual(status, 200)
+        self.assertEqual(final['seed'], 'BK9JA07')
+        self.assertIs(final['request']['fresh_seed'], True)
+        status, report = self.request('POST', '/api/distinct', {'run_id': run['run_id']})
+        self.assertEqual(status, 200, report)
+
+    def test_fresh_seed_unavailable_is_reported_as_501(self):
+        (self.workspace / 'bet9ja' / 'scripts' / 'book_and_scan.py').unlink()
+        status, body = self.request('POST', '/api/scan', {'provider': 'bet9ja', 'fresh_seed': True})
+        self.assertEqual(status, 501, body)
+        self.assertEqual(body['error']['code'], 'fresh_seed_unavailable')
+        # The same provider still scans from a typed seed.
+        self.assertEqual(self.request('POST', '/api/scan', {'provider': 'bet9ja', 'seed': 'AbC1234'})[0], 202)
 
     def test_invalid_json_and_framing(self):
         for raw in ('[]', 'null', 'false', '{', '{"x":NaN}', '{"x":1,"x":2}'):
@@ -141,6 +176,60 @@ class APITests(RegistryTestBase):
                 distinct_codes = {ticket['raw']['code'] for ticket in distinct['distinct']}
                 self.assertLessEqual(distinct_codes, set(report['selection']['selected_codes']))
                 self.assertEqual(report['excluded'][0]['reason'], 'provider_mismatch')
+
+    def test_codes_lists_the_whole_pool_the_analyses_read(self):
+        path = self.workspace / 'extract.json'
+        rows = [coupon('A', 'shared'), coupon('B', 'shared'), coupon('C', 'solo'), coupon('FOREIGN', 'other', 'bet9ja')]
+        snapshot = json.dumps({'provider': 'sportybet', 'odds_basis': 'parsed_leg_product',
+                               'min_total_odds': 2, 'max_total_odds': 10, 'qualifying': rows}).encode()
+        with patch.object(self.reg, 'get', return_value={'provider': 'sportybet', 'state': 'succeeded'}), \
+             patch.object(self.reg, 'committed_extract_snapshot', return_value=(path, snapshot)):
+            status, listing = self.request('POST', '/api/codes', {'run_id': 'test'})
+            self.assertEqual(status, 200, listing)
+            status, distinct = self.request('POST', '/api/distinct', {'run_id': 'test'})
+            self.assertEqual(status, 200, distinct)
+            # Overlapping codes are listed too; only ineligible rows are left out.
+            self.assertEqual(['A', 'B', 'C'], sorted(ticket['raw']['code'] for ticket in listing['codes']))
+            self.assertEqual(listing['pool_size'], 3)
+            self.assertEqual(listing['pool_size'], distinct['pool_size'])
+            self.assertEqual(listing['excluded'][0]['reason'], 'provider_mismatch')
+            self.assertTrue(all(ticket['legs'] for ticket in listing['codes']))
+            self.assertNotIn('tickets', listing)
+            self.assertEqual(listing['run_id'], 'test')
+            self.assertEqual(listing['odds_label'], 'recorded, not verified payout')
+            # It takes a run id and nothing else, like stage 2.
+            for body in ({}, {'run_id': ''}, {'run_id': 'test', 'max_exposure': 1}):
+                self.assertEqual(self.request('POST', '/api/codes', body)[0], 400)
+        self.assertEqual(self.request('GET', '/api/codes')[0], 405)
+
+    def test_codes_lists_what_an_unfinished_run_saved(self):
+        run_dir = self.workspace / 'stopped-run'
+        run_dir.mkdir()
+        saved = {'provider': 'sportybet', 'odds_basis': 'parsed_leg_product', 'partial': True,
+                 'min_total_odds': 2, 'max_total_odds': 10, 'stop_reason': None,
+                 'qualifying': [coupon('A', 'shared'), coupon('B', 'shared')]}
+        for state in ('running', 'failed', 'cancelled'):
+            with self.subTest(state=state), \
+                 patch.object(self.reg, 'get', return_value={'provider': 'sportybet', 'state': state,
+                                                             'extract': None}), \
+                 patch.object(self.reg, '_resolve_run_dir', return_value=run_dir):
+                # Nothing saved yet is a conflict, not an empty list.
+                (run_dir / 'checkpoint.json').unlink(missing_ok=True)
+                self.assertEqual(self.request('POST', '/api/codes', {'run_id': 'test'})[0], 409)
+                (run_dir / 'checkpoint.json').write_text(json.dumps(saved))
+                status, listing = self.request('POST', '/api/codes', {'run_id': 'test'})
+                self.assertEqual(status, 200, listing)
+                self.assertTrue(listing['partial'])
+                self.assertEqual(listing['state'], state)
+                self.assertEqual(['A', 'B'], sorted(ticket['raw']['code'] for ticket in listing['codes']))
+                # A checkpoint is never an extract: the analyses still refuse the run.
+                for route in ('/api/distinct', '/api/decorrelate'):
+                    self.assertEqual(self.request('POST', route, {'run_id': 'test'})[0], 409)
+                # One written for another provider, or cut short, is refused.
+                (run_dir / 'checkpoint.json').write_text(json.dumps({**saved, 'provider': 'bet9ja'}))
+                self.assertEqual(self.request('POST', '/api/codes', {'run_id': 'test'})[0], 409)
+                (run_dir / 'checkpoint.json').write_text('{"provider": "sportybet", "qualif')
+                self.assertEqual(self.request('POST', '/api/codes', {'run_id': 'test'})[0], 409)
 
     def test_all_get_and_head_routes_guarded_before_side_effects(self):
         (self.workspace / 'private.txt').write_text('private codes')
@@ -191,8 +280,8 @@ class APITests(RegistryTestBase):
         path = self.workspace / 'extract.json'
         good = json.dumps({'provider': 'sportybet', 'odds_basis': 'parsed_leg_product',
                            'min_total_odds': 1, 'qualifying': []}).encode()
-        with patch.object(self.reg, 'get', return_value={'provider': 'sportybet'}):
-            for route in ('distinct', 'decorrelate'):
+        with patch.object(self.reg, 'get', return_value={'provider': 'sportybet', 'state': 'succeeded'}):
+            for route in ('codes', 'distinct', 'decorrelate'):
                 for snapshot in (b'not json', b'\xff'):
                     with patch.object(self.reg, 'committed_extract_snapshot', return_value=(path, snapshot)):
                         status, body = self.request('POST', '/api/' + route, {'run_id': 'test'})

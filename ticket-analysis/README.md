@@ -166,6 +166,23 @@ it does not replace portfolio analysis or verify settlement.
 
 Local scan/analysis API: see [F6 API contract and examples](docs/F6_API.md).
 The same server hosts the three-stage console at `/app` (harvest -> distinct ->
-de-correlate), which drives that API from the browser. Copy buttons on every page
+de-correlate), which drives that API from the browser. A harvest starts from a
+booking code you type, or from "Book a fresh code": that run opens the provider
+in a browser, books one coupon, and scans from the code it got, all under one run
+id. Booking reserves a code; it never stakes money.
+
+Stage 1 lists every code a run has found, with its odds, legs and games, before
+any analysis is asked for. The list fills in while the scan runs, from what the
+worker saves as it goes, and a run that fails or is cancelled keeps the codes
+it had saved. Overlapping codes are
+included there; stage 2 is what separates the distinct ones.
+
+Stage 2's distinct list can be ordered (lowest or highest odds first) and narrowed
+to an odds range without re-scanning. That is a view over the result already
+computed: the distinctness analysis always runs over the whole eligible pool, and
+stage 3 ignores the controls. Stage 1's list has the same controls, kept
+separately.
+
+Copy buttons on every page
 share one helper (`portfolio/copy.js`): clipboard first, then a selectable-text
 fallback, so a code stays copyable when the clipboard is unavailable.

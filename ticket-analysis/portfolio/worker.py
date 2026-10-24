@@ -53,6 +53,10 @@ from pathlib import Path
 
 PROVIDER_NAMES = ("bet9ja", "sportybet")
 SCAN_MODULE = "scripts.scan_code"
+# Fresh-seed runs: the provider books one code in a browser and then hands over
+# to its own scan_code in the SAME process, so one worker, one lock and one run
+# id cover booking and scanning. See <provider>/scripts/book_and_scan.py.
+BOOK_SCAN_MODULE = "scripts.book_and_scan"
 
 # Keys that steer import resolution or .env file selection rather than
 # provider configuration; removing them keeps the child hermetic.
@@ -82,6 +86,10 @@ _ENV_KEY = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
 class UnknownProviderError(ValueError):
     """The workspace has no scan entrypoint for the named provider."""
+
+
+class BookingUnavailableError(UnknownProviderError):
+    """The provider can be scanned but has no fresh-seed booking entrypoint."""
 
 
 class JobBusyError(RuntimeError):
@@ -158,19 +166,24 @@ def isolated_env(workspace: Path, extra: dict | None = None) -> dict[str, str]:
     return env
 
 
-def scan_argv(python: str, seed: str, run_dir: Path, *, max_qualifying: int = 0,
+def scan_argv(python: str, seed: str | None, run_dir: Path, *, max_qualifying: int = 0,
               min_odds: float | None = None, max_odds: float | None = None,
-              max_codes: int | None = None, depth: int | None = None) -> list[str]:
-    """Argument list for scripts.scan_code --scan; never passed to a shell.
+              max_codes: int | None = None, depth: int | None = None,
+              fresh_seed: bool = False) -> list[str]:
+    """Argument list for the provider scan; never passed to a shell.
 
     Flag semantics verified in both scan_code CLIs: --max-qualifying sets
     settings.max_qualifying (0 = uncapped; negatives rejected at the CLI) and
     --run-dir sets settings.results_dir so the extract is written under the
-    run folder.
+    run folder. book_and_scan takes exactly these flags minus the seed, which
+    it books before delegating, so the scan phase is byte-for-byte the
+    ordinary one.
     """
-    argv = [python, "-m", SCAN_MODULE, seed, "--scan",
-            "--max-qualifying", str(int(max_qualifying)),
-            "--run-dir", str(run_dir)]
+    head = ([python, "-m", BOOK_SCAN_MODULE] if fresh_seed
+            else [python, "-m", SCAN_MODULE, seed])
+    argv = head + ["--scan",
+                   "--max-qualifying", str(int(max_qualifying)),
+                   "--run-dir", str(run_dir)]
     if min_odds is not None:
         argv += ["--min-odds", str(min_odds)]
     if max_odds is not None:
@@ -311,7 +324,7 @@ class ScanJob:
     provider: str
     run_id: str
     run_dir: Path
-    seed: str
+    seed: str | None          # None until a fresh-seed worker books one
     argv: list
     process: subprocess.Popen
     worker_pid: int
@@ -392,13 +405,18 @@ class WorkerHost:
     def runs_root(self) -> Path:
         return self.workspace / "results" / "runs"
 
-    def provider_root(self, provider: str) -> Path:
+    def provider_root(self, provider: str, *, fresh_seed: bool = False) -> Path:
         if provider not in PROVIDER_NAMES:
             raise UnknownProviderError(f"unknown provider {provider!r}")
         root = self.workspace / provider
         entrypoint = root / (SCAN_MODULE.replace(".", "/") + ".py")
         if not entrypoint.is_file():
             raise UnknownProviderError(f"no {SCAN_MODULE}.py under {root}")
+        if fresh_seed:
+            booking = root / (BOOK_SCAN_MODULE.replace(".", "/") + ".py")
+            if not booking.is_file():
+                raise BookingUnavailableError(
+                    f"no {BOOK_SCAN_MODULE}.py under {root}")
         return root.resolve()
 
     def active_job(self, provider: str) -> ScanJob | None:
@@ -413,14 +431,20 @@ class WorkerHost:
         provider lock, so no new job may start for this provider."""
         return self._lock_held(self.runs_root() / provider / "job.lock")
 
-    def start_scan(self, provider: str, seed: str, *, max_qualifying: int = 0,
+    def start_scan(self, provider: str, seed: str | None = None, *,
+                   fresh_seed: bool = False, max_qualifying: int = 0,
                    min_odds: float | None = None, max_odds: float | None = None,
                    max_codes: int | None = None, depth: int | None = None,
                    env_extra: dict | None = None, run_dir: Path | None = None,
                    run_lock_fd: int | None = None) -> ScanJob:
-        if not isinstance(seed, str) or not seed.strip():
+        # A fresh-seed run has no seed yet by definition: the worker books one
+        # and writes it to <run_dir>/seed.json before the scan phase starts.
+        if fresh_seed:
+            if seed is not None:
+                raise ValueError("fresh_seed books its own seed; do not supply one")
+        elif not isinstance(seed, str) or not seed.strip():
             raise ValueError("seed must be a non-empty booking code")
-        root = self.provider_root(provider)
+        root = self.provider_root(provider, fresh_seed=fresh_seed)
         lock_file = self.runs_root() / provider / "job.lock"
         owner_file = lock_file.with_name("job.owner.json")
         started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -458,7 +482,7 @@ class WorkerHost:
 
         argv = scan_argv(self.python, seed, owned_dir, max_qualifying=max_qualifying,
                          min_odds=min_odds, max_odds=max_odds,
-                         max_codes=max_codes, depth=depth)
+                         max_codes=max_codes, depth=depth, fresh_seed=fresh_seed)
         env = isolated_env(self.workspace, env_extra)
         owner = {"provider": provider, "run_id": owned_dir.name,
                  "started_at": started_at}

@@ -3,8 +3,8 @@ import json
 import math
 import re
 
-from .worker import UnknownProviderError
-from .decorrelation import ExtractError, decorrelate_extract, harvest_odds_band
+from .worker import BookingUnavailableError, UnknownProviderError
+from .decorrelation import ExtractError, build_pool, decorrelate_extract, harvest_odds_band
 from .selection import ParamError, parse_decorrelate_params
 from .uniqueness import analyze_extract
 
@@ -35,14 +35,18 @@ def scan_params(body):
     if type(fresh) is not bool:
         raise ParamError('fresh_seed must be a boolean')
     if fresh:
-        raise APIError(501, 'fresh_seed_unavailable',
-                       'Fresh-seed booking is not implemented; supply an explicit seed.')
-    seed = body.get('seed')
-    pattern = r'[A-Za-z0-9]{7}' if provider == 'bet9ja' else r'[A-Za-z0-9]{6}'
-    if not isinstance(seed, str) or not re.fullmatch(pattern, seed):
-        raise ParamError('seed must be a valid booking code for the provider')
-    if provider == 'sportybet':
-        seed = seed.upper()
+        # The worker books the code in the provider's browser flow, so there is
+        # nothing to validate here and nothing for the caller to supply.
+        if body.get('seed') not in (None, ''):
+            raise ParamError('omit seed when fresh_seed is true; the run books its own')
+        seed = None
+    else:
+        seed = body.get('seed')
+        pattern = r'[A-Za-z0-9]{7}' if provider == 'bet9ja' else r'[A-Za-z0-9]{6}'
+        if not isinstance(seed, str) or not re.fullmatch(pattern, seed):
+            raise ParamError('seed must be a valid booking code for the provider')
+        if provider == 'sportybet':
+            seed = seed.upper()
     values = {}
     for name, default, minimum in (('want_count', 0, 0), ('try_budget', 25000, 1)):
         value = body.get(name, default)
@@ -62,13 +66,14 @@ def scan_params(body):
         values[name] = 1 if name == 'min_odds' and value == 0 else value
     if 0 < values['max_odds'] < values['min_odds']:
         raise ParamError('positive max_odds must be >= min_odds')
-    return dict(provider=provider, seed=seed, min_odds=values['min_odds'],
+    return dict(provider=provider, seed=seed, fresh_seed=fresh,
+                min_odds=values['min_odds'],
                 max_odds=values['max_odds'], max_qualifying=values['want_count'],
                 max_codes=values['try_budget'], depth=3)
 
 
 def allowed_methods(path):
-    if path in ('/api/scan', '/api/distinct', '/api/decorrelate') or re.fullmatch(r'/api/scan/[^/]+/cancel', path):
+    if path in ('/api/scan', '/api/codes', '/api/distinct', '/api/decorrelate') or re.fullmatch(r'/api/scan/[^/]+/cancel', path):
         return ('POST',)
     if path == '/api/runs' or re.fullmatch(r'/api/scan/[^/]+', path):
         return ('GET', 'HEAD')
@@ -97,25 +102,42 @@ def dispatch(registry, method, path, body, query):
             params = scan_params(body)
             try:
                 return 202, registry.start_scan(**params)
+            except BookingUnavailableError as exc:
+                raise APIError(501, 'fresh_seed_unavailable',
+                               'This provider has no fresh-seed booking entrypoint; '
+                               'supply an explicit seed.') from exc
             except UnknownProviderError as exc:
                 raise APIError(500, 'server_error', 'Provider scanner is unavailable') from exc
         if path.startswith('/api/scan/') and path.endswith('/cancel'):
             fields(body, ())
             return 200, registry.cancel(path[len('/api/scan/'):-len('/cancel')])
-        if path in ('/api/distinct', '/api/decorrelate'):
+        if path in ('/api/codes', '/api/distinct', '/api/decorrelate'):
             fields(body, ('run_id', 'max_exposure', 'target') if path.endswith('decorrelate') else ('run_id',))
             params = parse_decorrelate_params(body) if path.endswith('decorrelate') else None
             run_id = body.get('run_id')
             if not isinstance(run_id, str) or not run_id:
                 raise ParamError('run_id is required')
             status = registry.get(run_id)
-            extract, snapshot = registry.committed_extract_snapshot(run_id)
+            partial = False
+            if path == '/api/codes':
+                # Listing also serves a run that is still going or that stopped
+                # early; the analyses below stay on committed extracts only.
+                extract, snapshot, partial = registry.saved_codes_snapshot(run_id)
+            else:
+                extract, snapshot = registry.committed_extract_snapshot(run_id)
             try:
                 data = json.loads(snapshot)
             except (ValueError, RecursionError) as exc:
                 raise ExtractError('Cannot parse committed extract') from exc
             policy = harvest_odds_band(data)
-            if params is None:
+            if path == '/api/codes':
+                # Every code the run harvested, before any analysis: the same
+                # eligible pool stages 2 and 3 read, listed rather than judged.
+                pool = build_pool(extract, status['provider'], data=data, **policy)
+                codes = pool.pop('tickets')
+                report = {**pool, 'codes': codes, 'partial': partial,
+                          'state': status['state']}
+            elif params is None:
                 report = analyze_extract(extract, status['provider'], data=data, **policy)
             else:
                 report = decorrelate_extract(extract, status['provider'], params,
