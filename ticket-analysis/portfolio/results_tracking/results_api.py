@@ -47,7 +47,9 @@ from typing import Callable
 from .__main__ import EvaluationInputError, evaluate_run
 from .cache import CacheKey, FixtureCache, QuotaExceededError, QuotaTracker
 from .jobs import FatalTaskError, JobBudget, JobError, JobRecord, JobState, JobStore, Task, run_result_job
-from .sources.api_football import ApiFootballClient, ApiFootballError, build_fixture, filter_in_scope
+from .sources.api_football import (
+    ApiFootballClient, ApiFootballError, ApiFootballTransportError, build_fixture, filter_in_scope,
+)
 
 PARSER_VERSION = "api_football_v1"
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
@@ -125,6 +127,11 @@ class ResultsApiConfig:
     # checkpoint vs. a committed extract) -- an unrelated question from
     # whether this server tolerates an incomplete source fetch.
     tolerate_incomplete_fetch: bool = False
+    # Bounded exponential backoff applied before a retry of a real
+    # (retryable) source failure, not the first attempt (F9_STEP5_REVIEW.md
+    # S5-11) -- see jobs.JobBudget.
+    retry_backoff_base: float = 0.5
+    retry_backoff_max: float = 8.0
 
     def cache_root(self) -> Path:
         return self.root / "cache"
@@ -172,6 +179,7 @@ def compute_config_digest(config: ResultsApiConfig) -> str:
         "max_retries": config.max_retries, "per_call_timeout": config.per_call_timeout,
         "max_requests_per_job": config.max_requests_per_job, "parser_version": PARSER_VERSION,
         "tolerate_incomplete_fetch": config.tolerate_incomplete_fetch,
+        "retry_backoff_base": config.retry_backoff_base, "retry_backoff_max": config.retry_backoff_max,
         "identity_config_sha256": hashlib.sha256(identity_bytes).hexdigest(),
     }, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
@@ -378,6 +386,14 @@ def _make_fetch_one(client, cache: FixtureCache, quota: QuotaTracker, *,
                 fetched_at = datetime.now(timezone.utc).isoformat()
                 fixtures = [build_fixture(item, fetched_at=fetched_at)
                             for item in filter_in_scope(raw_fixtures)]
+            except ApiFootballTransportError as exc:
+                # A transport/5xx failure is evidence of nothing about
+                # fixture data -- it reached no usable answer -- so it is
+                # safe to retry through the generic runner's retry loop,
+                # unlike every other ApiFootballError (F9_STEP5_REVIEW.md
+                # S5-11). Raising a plain exception (not FatalTaskError)
+                # is what makes _attempt_task retry it.
+                raise RuntimeError(f"retryable api-football failure: {exc}") from exc
             except ApiFootballError as exc:
                 raise FatalTaskError(str(exc)) from exc
             # An empty response (no in-scope fixtures returned for this
@@ -665,7 +681,9 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
                 return
             fetch_one = _make_fetch_one(client, cache, quota, refresh=refresh)
             budget = JobBudget(max_requests=config.max_requests_per_job, max_retries=config.max_retries,
-                                per_call_timeout=config.per_call_timeout, max_workers=config.max_workers)
+                                per_call_timeout=config.per_call_timeout, max_workers=config.max_workers,
+                                retry_backoff_base=config.retry_backoff_base,
+                                retry_backoff_max=config.retry_backoff_max)
             tasks = [Task(key=date, payload=date) for date in dates]
             try:
                 outcome = run_result_job(job_store, inner.job_id, tasks, fetch_one=fetch_one, budget=budget)

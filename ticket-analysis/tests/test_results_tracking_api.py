@@ -25,7 +25,9 @@ from portfolio.results_tracking.results_api import (
     compute_config_digest, get_latest_report, list_codes, load_identity_evidence,
     load_population, publish_revision, submit_evaluation,
 )
-from portfolio.results_tracking.sources.api_football import build_fixture, filter_in_scope
+from portfolio.results_tracking.sources.api_football import (
+    ApiFootballAuthError, ApiFootballTransportError, build_fixture, filter_in_scope,
+)
 
 
 class FakeRegistry:
@@ -83,6 +85,32 @@ class FakeApiFootballClient:
         with self._lock:
             self.calls.append(date)
         return self._fixtures_by_date.get(date, [])
+
+
+class FakeFlakyThenOkClient:
+    """Raises ApiFootballTransportError the first `fail_times` calls for a
+    date, then succeeds -- a retryable real-adapter failure (S5-11)."""
+    def __init__(self, fixtures_by_date: dict, *, fail_times: int = 1):
+        self._fixtures_by_date = fixtures_by_date
+        self._fail_times = fail_times
+        self.calls = []
+
+    def get_fixtures_by_date(self, date, league=None, season=None):
+        self.calls.append(date)
+        if len([c for c in self.calls if c == date]) <= self._fail_times:
+            raise ApiFootballTransportError("simulated transport failure")
+        return self._fixtures_by_date.get(date, [])
+
+
+class FakeAlwaysAuthFailingClient:
+    """Always raises ApiFootballAuthError -- a fatal, non-retryable
+    real-adapter failure (S5-11)."""
+    def __init__(self):
+        self.calls = []
+
+    def get_fixtures_by_date(self, date, league=None, season=None):
+        self.calls.append(date)
+        raise ApiFootballAuthError("simulated bad api key")
 
 
 class LoadPopulationTests(unittest.TestCase):
@@ -721,6 +749,48 @@ class SubmitEvaluationTests(unittest.TestCase):
             final2 = _wait_for_terminal(job_store2, record2.job_id)
             self.assertEqual(final2.state, JobState.SUCCEEDED)
             self.assertEqual(len(final2.result["incomplete_dates"]), 1)
+
+    def test_a_transient_transport_failure_is_retried_and_still_succeeds(self):
+        # F9_STEP5_REVIEW.md S5-11: a real transport/5xx failure must be
+        # retried by the generic runner instead of aborting the job
+        # immediately as every ApiFootballError used to.
+        with TemporaryDirectory() as tmp:
+            registry = FakeRegistry(_extract([
+                _ticket("C1", "Arsenal - Chelsea", "England - Premier League", "1X2", "1",
+                        "2026-10-23T15:00:00"),
+            ]))
+            config = ResultsApiConfig(root=Path(tmp) / "results_api", max_retries=2,
+                                       retry_backoff_base=0.0)
+            job_store = JobStore(Path(tmp) / "jobs")
+            client = FakeFlakyThenOkClient({
+                "2026-10-23": [_raw_fixture(1, 39, "Premier League", "Arsenal", "Chelsea", "FT",
+                                             "2026-10-23T15:00:00+00:00", fulltime={"home": 2, "away": 1})],
+            }, fail_times=1)
+
+            record = submit_evaluation(registry, config, job_store, "run-1",
+                                        client_factory=lambda: client)
+            final = _wait_for_terminal(job_store, record.job_id)
+            self.assertEqual(final.state, JobState.SUCCEEDED)
+            self.assertEqual(len(client.calls), 2)  # one failure, one retry that succeeded
+            report = get_latest_report(config, "run-1")
+            self.assertEqual(report["counts"]["total"], 1)
+
+    def test_a_fatal_auth_failure_is_not_retried_and_fails_the_job(self):
+        with TemporaryDirectory() as tmp:
+            registry = FakeRegistry(_extract([
+                _ticket("C1", "Arsenal - Chelsea", "England - Premier League", "1X2", "1",
+                        "2026-10-23T15:00:00"),
+            ]))
+            config = ResultsApiConfig(root=Path(tmp) / "results_api", max_retries=5)
+            job_store = JobStore(Path(tmp) / "jobs")
+            client = FakeAlwaysAuthFailingClient()
+
+            record = submit_evaluation(registry, config, job_store, "run-1",
+                                        client_factory=lambda: client)
+            final = _wait_for_terminal(job_store, record.job_id)
+            self.assertEqual(final.state, JobState.FAILED)
+            self.assertEqual(final.error["code"], "fatal_fetch_error")
+            self.assertEqual(len(client.calls), 1)  # never retried
 
 
 class CommitPublicationTests(unittest.TestCase):

@@ -276,6 +276,55 @@ class RunResultJobTests(unittest.TestCase):
             self.assertEqual(attempts["count"], 1)
             self.assertEqual(outcome.incomplete_task_keys, ("t0",))
 
+    def test_retry_backoff_is_bounded_and_skipped_on_the_first_attempt(self):
+        # F9_STEP5_REVIEW.md S5-11: a real failure gets spaced-out retries,
+        # bounded by retry_backoff_max, rather than hammering the source
+        # immediately -- but the very first attempt never waits.
+        with TemporaryDirectory() as tmp:
+            store = _store(tmp)
+            record = store.create_or_reuse("run-1", "input-a", "config-a")
+            attempt_times = []
+
+            def fetch_one(task):
+                attempt_times.append(time.monotonic())
+                if len(attempt_times) < 4:
+                    raise RuntimeError("transient")
+                return "ok"
+
+            started = time.monotonic()
+            outcome = run_result_job(
+                store, record.job_id, [Task(key="t0")], fetch_one=fetch_one,
+                budget=JobBudget(max_requests=10, max_retries=5,
+                                  retry_backoff_base=0.05, retry_backoff_max=0.08),
+            )
+            self.assertEqual(outcome.results, {"t0": "ok"})
+            self.assertLess(attempt_times[0] - started, 0.02)  # first attempt: no wait
+            gaps = [b - a for a, b in zip(attempt_times, attempt_times[1:])]
+            for gap in gaps:
+                self.assertGreaterEqual(gap, 0.04)
+                self.assertLess(gap, 0.2)  # bounded by retry_backoff_max, not unbounded growth
+
+    def test_no_backoff_by_default_retries_immediately(self):
+        with TemporaryDirectory() as tmp:
+            store = _store(tmp)
+            record = store.create_or_reuse("run-1", "input-a", "config-a")
+            attempts = {"count": 0}
+
+            def fetch_one(task):
+                attempts["count"] += 1
+                if attempts["count"] < 3:
+                    raise RuntimeError("transient")
+                return "ok"
+
+            started = time.monotonic()
+            outcome = run_result_job(
+                store, record.job_id, [Task(key="t0")], fetch_one=fetch_one,
+                budget=JobBudget(max_requests=10, max_retries=3),
+            )
+            elapsed = time.monotonic() - started
+            self.assertEqual(outcome.results, {"t0": "ok"})
+            self.assertLess(elapsed, 0.1)
+
 
 if __name__ == "__main__":
     unittest.main()

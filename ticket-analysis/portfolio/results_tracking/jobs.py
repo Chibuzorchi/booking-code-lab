@@ -55,6 +55,7 @@ import json
 import os
 import re
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -267,6 +268,12 @@ class JobBudget:
     max_retries: int = 2
     per_call_timeout: float = 30.0
     max_workers: int = 4
+    # Bounded exponential backoff before each retry (not the first
+    # attempt): retry_backoff_base * 2**(attempt-1), capped at
+    # retry_backoff_max. 0 (the default) retries immediately, preserving
+    # the original behavior (F9_STEP5_REVIEW.md S5-11).
+    retry_backoff_base: float = 0.0
+    retry_backoff_max: float = 0.0
 
     def __post_init__(self):
         if self.max_requests <= 0:
@@ -277,6 +284,10 @@ class JobBudget:
             raise JobError("per_call_timeout must be positive")
         if self.max_workers <= 0:
             raise JobError("max_workers must be positive")
+        if self.retry_backoff_base < 0:
+            raise JobError("retry_backoff_base must not be negative")
+        if self.retry_backoff_max < self.retry_backoff_base:
+            raise JobError("retry_backoff_max must not be less than retry_backoff_base")
 
 
 @dataclass(frozen=True)
@@ -310,15 +321,25 @@ class _Budget:
 
 
 def _attempt_task(task: Task, fetch_one: Callable[[Task], Any], budget: _Budget,
-                   max_retries: int, cancel_check: Callable[[], bool]) -> Any:
+                   max_retries: int, cancel_check: Callable[[], bool], *,
+                   retry_backoff_base: float = 0.0, retry_backoff_max: float = 0.0) -> Any:
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
-        if attempt > 0 and cancel_check():
-            # A cancellation observed between retries stops this task from
-            # issuing another call -- the attempt already in flight when
-            # cancellation lands is still allowed to finish, but no new one
-            # starts on its behalf (F9_STEP5_REVIEW.md S5-08).
-            raise _CancelledTaskError()
+        if attempt > 0:
+            if cancel_check():
+                # A cancellation observed between retries stops this task
+                # from issuing another call -- the attempt already in
+                # flight when cancellation lands is still allowed to
+                # finish, but no new one starts on its behalf
+                # (F9_STEP5_REVIEW.md S5-08). Checked before backoff so
+                # cancellation is never delayed behind a wait.
+                raise _CancelledTaskError()
+            if retry_backoff_base > 0:
+                # Bounded exponential backoff before a retry, not the
+                # first attempt (F9_STEP5_REVIEW.md S5-11): a real source
+                # failure gets spaced-out retries instead of hammering it
+                # immediately.
+                time.sleep(min(retry_backoff_base * (2 ** (attempt - 1)), retry_backoff_max))
         if not budget.try_consume():
             raise _BudgetExhaustedError()
         try:
@@ -375,7 +396,9 @@ def run_result_job(store: JobStore, job_id: str, tasks: Sequence[Task],
             index += len(chunk)
             futures = {
                 pool.submit(_attempt_task, task, fetch_one, budget_counter,
-                            budget.max_retries, _cancel_check): task
+                            budget.max_retries, _cancel_check,
+                            retry_backoff_base=budget.retry_backoff_base,
+                            retry_backoff_max=budget.retry_backoff_max): task
                 for task in chunk
             }
             for future, task in futures.items():

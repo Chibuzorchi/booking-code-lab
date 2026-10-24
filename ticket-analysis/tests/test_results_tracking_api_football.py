@@ -11,7 +11,8 @@ import requests
 
 from portfolio.results_tracking.fixtures import FixtureState
 from portfolio.results_tracking.sources.api_football import (
-    ApiFootballClient, ApiFootballError, build_fixture, extract_regulation_score,
+    ApiFootballAuthError, ApiFootballClient, ApiFootballError, ApiFootballQuotaError,
+    ApiFootballTransportError, build_fixture, extract_regulation_score,
     fetch_in_scope_fixtures_for_date, filter_in_scope, map_fixture_state,
 )
 
@@ -25,20 +26,21 @@ def _real_ipswich_fixture() -> dict:
         (_FIXTURES_DIR / "api_football_ipswich_nottingham_forest_fulltime.json").read_text())
 
 
-def _mock_response(json_body, status_ok=True):
+def _mock_response(json_body, status_code=200):
     resp = MagicMock()
+    resp.status_code = status_code
     resp.json.return_value = json_body
-    if status_ok:
+    if status_code < 400:
         resp.raise_for_status.return_value = None
     else:
-        resp.raise_for_status.side_effect = requests.RequestException("http error")
+        resp.raise_for_status.side_effect = requests.HTTPError(f"HTTP {status_code}")
     return resp
 
 
 class ApiFootballClientTests(unittest.TestCase):
     def test_missing_key_raises(self):
         with patch.dict("os.environ", {}, clear=True):
-            with self.assertRaises(ApiFootballError):
+            with self.assertRaises(ApiFootballAuthError):
                 ApiFootballClient()
 
     def test_explicit_key_used_over_environment(self):
@@ -62,18 +64,73 @@ class ApiFootballClientTests(unittest.TestCase):
         self.assertEqual(client.session.get.call_args.kwargs["params"],
                           {"date": "2026-10-24", "league": 39, "season": 2026})
 
-    def test_api_errors_field_raises(self):
+    def test_api_errors_field_with_no_recognized_signal_is_fatal_not_retryable(self):
         client = ApiFootballClient(api_key="k")
         client.session.get = MagicMock(return_value=_mock_response(
             {"response": [], "errors": ["Invalid API key"]}))
         with self.assertRaises(ApiFootballError):
             client.get_fixtures_by_date("2026-10-24")
+        # Not recognized as a specific auth/quota signal (a free-text
+        # message, not a named field), so it must not be misclassified as
+        # retryable.
+        self.assertNotIsInstance(
+            self._raised(client, "2026-10-24"), ApiFootballTransportError)
 
-    def test_transport_failure_raises(self):
+    def _raised(self, client, date):
+        try:
+            client.get_fixtures_by_date(date)
+        except ApiFootballError as exc:
+            return exc
+        raise AssertionError("expected ApiFootballError")
+
+    def test_api_errors_field_named_token_is_an_auth_error(self):
+        # F9_STEP5_REVIEW.md S5-11: auth failures must be distinguished
+        # from transport failures so they are never retried.
         client = ApiFootballClient(api_key="k")
-        client.session.get = MagicMock(return_value=_mock_response({}, status_ok=False))
+        client.session.get = MagicMock(return_value=_mock_response(
+            {"response": [], "errors": {"token": "invalid key"}}))
+        with self.assertRaises(ApiFootballAuthError):
+            client.get_fixtures_by_date("2026-10-24")
+
+    def test_api_errors_field_named_requests_is_a_quota_error(self):
+        client = ApiFootballClient(api_key="k")
+        client.session.get = MagicMock(return_value=_mock_response(
+            {"response": [], "errors": {"requests": "rate limit exceeded"}}))
+        with self.assertRaises(ApiFootballQuotaError):
+            client.get_fixtures_by_date("2026-10-24")
+
+    def test_connection_failure_is_a_retryable_transport_error(self):
+        # F9_STEP5_REVIEW.md S5-11: the request never reached a usable
+        # answer, so this is real evidence of nothing -- safe to retry.
+        client = ApiFootballClient(api_key="k")
+        client.session.get = MagicMock(side_effect=requests.ConnectionError("boom"))
+        with self.assertRaises(ApiFootballTransportError):
+            client.get_fixtures_by_date("2026-10-24")
+
+    def test_server_error_status_is_a_retryable_transport_error(self):
+        client = ApiFootballClient(api_key="k")
+        client.session.get = MagicMock(return_value=_mock_response({}, status_code=503))
+        with self.assertRaises(ApiFootballTransportError):
+            client.get_fixtures_by_date("2026-10-24")
+
+    def test_unauthorized_status_is_an_auth_error(self):
+        client = ApiFootballClient(api_key="k")
+        client.session.get = MagicMock(return_value=_mock_response({}, status_code=401))
+        with self.assertRaises(ApiFootballAuthError):
+            client.get_fixtures_by_date("2026-10-24")
+
+    def test_too_many_requests_status_is_a_quota_error(self):
+        client = ApiFootballClient(api_key="k")
+        client.session.get = MagicMock(return_value=_mock_response({}, status_code=429))
+        with self.assertRaises(ApiFootballQuotaError):
+            client.get_fixtures_by_date("2026-10-24")
+
+    def test_other_4xx_status_is_a_fatal_not_retryable_error(self):
+        client = ApiFootballClient(api_key="k")
+        client.session.get = MagicMock(return_value=_mock_response({}, status_code=400))
         with self.assertRaises(ApiFootballError):
             client.get_fixtures_by_date("2026-10-24")
+        self.assertNotIsInstance(self._raised(client, "2026-10-24"), ApiFootballTransportError)
 
     def test_empty_envelope_raises_not_empty_list(self):
         # F9_IMPLEMENTATION_REVIEW.md R11: a missing 'response' field must

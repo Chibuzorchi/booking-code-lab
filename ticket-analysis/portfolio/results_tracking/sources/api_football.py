@@ -82,7 +82,47 @@ IN_SCOPE_LEAGUE_IDS = {
 
 
 class ApiFootballError(RuntimeError):
-    """A transport, auth, or response-shape problem talking to API-Football."""
+    """A response-shape or application-level problem talking to
+    API-Football that must never be retried (F9_STEP5_REVIEW.md S5-11):
+    the request was answered, but the answer itself is unusable or
+    wrong-shaped, or signals a condition a retry cannot fix."""
+
+
+class ApiFootballTransportError(ApiFootballError):
+    """A transport-level failure -- connection error, timeout, or a 5xx
+    server error -- that is evidence of nothing about fixture data and is
+    safe to retry (F9_STEP5_REVIEW.md S5-11)."""
+
+
+class ApiFootballAuthError(ApiFootballError):
+    """Authentication/authorization failed (missing or rejected API key).
+    Retrying with the same key cannot succeed."""
+
+
+class ApiFootballQuotaError(ApiFootballError):
+    """The source itself signalled a rate/quota limit. Retrying
+    immediately cannot succeed."""
+
+
+def _classify_api_errors(errors) -> ApiFootballError:
+    """API-Football's `errors` field is a dict (field name -> message) or,
+    for some failure modes, a list of message strings. Classified by
+    looking at its keys/entries for the auth- and quota-related names
+    API-Football is documented to use, falling back to the generic
+    (fatal, non-retryable) ApiFootballError for anything else -- never
+    guessed into "safe to retry" without a recognized signal."""
+    if isinstance(errors, dict):
+        tokens = {str(key).lower() for key in errors}
+    elif isinstance(errors, list):
+        tokens = {str(item).lower() for item in errors}
+    else:
+        tokens = set()
+    message = f"API-Football returned errors: {errors}"
+    if tokens & {"token", "apikey", "auth"}:
+        return ApiFootballAuthError(message)
+    if tokens & {"requests", "ratelimit", "rate_limit"}:
+        return ApiFootballQuotaError(message)
+    return ApiFootballError(message)
 
 
 class ApiFootballClient:
@@ -90,7 +130,7 @@ class ApiFootballClient:
                  timeout_s: float = 10.0):
         self.api_key = api_key or os.environ.get("API_FOOTBALL_KEY")
         if not self.api_key:
-            raise ApiFootballError("API_FOOTBALL_KEY is not set")
+            raise ApiFootballAuthError("API_FOOTBALL_KEY is not set")
         self.session = session or requests.Session()
         self.session.headers.update({"x-apisports-key": self.api_key})
         self.timeout_s = timeout_s
@@ -98,7 +138,13 @@ class ApiFootballClient:
     def get_fixtures_by_date(self, date: str, league: int | None = None,
                               season: int | None = None) -> list[dict]:
         """date: 'YYYY-MM-DD'. Returns the raw `response` list exactly as the
-        API returns it -- no filtering, inference, or summarization here."""
+        API returns it -- no filtering, inference, or summarization here.
+
+        Raises ApiFootballTransportError for connection/timeout/5xx
+        failures (retryable -- the request never reached a usable answer),
+        and the other ApiFootballError subclasses for everything else
+        (fatal -- an answer was reached and it is unusable, F9_STEP5_REVIEW.md
+        S5-11): callers must retry only the former."""
         params = {"date": date}
         if league is not None:
             params["league"] = league
@@ -106,15 +152,27 @@ class ApiFootballClient:
             params["season"] = season
         try:
             resp = self.session.get(f"{API_BASE}/fixtures", params=params, timeout=self.timeout_s)
+        except requests.RequestException as exc:
+            raise ApiFootballTransportError(f"request failed: {exc}") from exc
+        if resp.status_code in (401, 403):
+            raise ApiFootballAuthError(f"API-Football authentication failed: HTTP {resp.status_code}")
+        if resp.status_code == 429:
+            raise ApiFootballQuotaError(f"API-Football rate limit: HTTP {resp.status_code}")
+        if resp.status_code >= 500:
+            raise ApiFootballTransportError(f"API-Football server error: HTTP {resp.status_code}")
+        try:
             resp.raise_for_status()
+        except requests.HTTPError as exc:
+            raise ApiFootballError(f"unexpected HTTP error: {exc}") from exc
+        try:
             payload = resp.json()
-        except (requests.RequestException, ValueError) as exc:
-            raise ApiFootballError(f"request failed: {exc}") from exc
+        except ValueError as exc:
+            raise ApiFootballError(f"response is not valid JSON: {exc}") from exc
         if not isinstance(payload, dict):
             raise ApiFootballError(f"API-Football envelope is not a JSON object: {type(payload)!r}")
         errors = payload.get("errors")
         if errors:
-            raise ApiFootballError(f"API-Football returned errors: {errors}")
+            raise _classify_api_errors(errors)
         response = payload.get("response")
         if response is None:
             raise ApiFootballError("API-Football envelope has no 'response' field")
