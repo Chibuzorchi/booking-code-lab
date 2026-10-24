@@ -2,11 +2,11 @@
 resolve -> evaluate). Pure/offline -- no network, no run directories.
 """
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from portfolio.results_tracking.evaluation import evaluate_selection
 from portfolio.results_tracking.fixtures import Fixture, FixtureProvenance, FixtureState, KickoffTime
-from portfolio.results_tracking.matching import Alias, VerifiedMapping
+from portfolio.results_tracking.matching import Alias, MatchingError, VerifiedMapping
 from portfolio.results_tracking.reporting import Outcome
 from portfolio.results_tracking.rules.scores import RegulationScore
 
@@ -60,7 +60,8 @@ class MatchingTests(unittest.TestCase):
 
     def test_ambiguous_match_is_unresolved(self):
         fx1 = _fixture(competition="Premier League")
-        fx2 = _fixture(competition="Premier League", season="2027")
+        fx2 = _fixture(competition="Premier League", season="2027",
+                       provenance=_provenance(source_fixture_id="2"))
         aliases = (Alias("sportybet_competition", "Premier League", "EPL"),
                    Alias("api_football_competition", "Premier League", "EPL"),
                    Alias("sportybet_team", "Arsenal", "Arsenal"),
@@ -76,8 +77,9 @@ class MatchingTests(unittest.TestCase):
         mapping = VerifiedMapping(provider="sportybet", provider_event_id="evt-1",
                                    league_display="Premier League", home_display="Arsenal",
                                    away_display="Everton", source="api_football",
-                                   source_fixture_id="1", verified_at="2026-10-23T00:00:00Z",
-                                   evidence="manual")
+                                   source_fixture_id="1", source_competition="Premier League",
+                                   source_home_team="Arsenal", source_away_team="Everton",
+                                   verified_at="2026-10-23T00:00:00Z", evidence="manual")
         outcome = evaluate_selection(**_leg(provider_event_id="evt-1", candidate_fixtures=(fx,),
                                              verified_mappings=(mapping,)))
         self.assertEqual(outcome.status, Outcome.WON)  # Arsenal 2-1 Everton, "Home"
@@ -100,6 +102,50 @@ class FixtureStateTests(unittest.TestCase):
 
     def test_finished_extra_time_without_score_is_unresolved_missing_period(self):
         fx = _fixture(state=FixtureState.FINISHED_EXTRA_TIME, score=None)
+        outcome = evaluate_selection(**_leg(candidate_fixtures=(fx,), aliases=self._aliases()))
+        self.assertEqual(outcome.status, Outcome.UNRESOLVED)
+        self.assertEqual(outcome.reason, "missing_period")
+
+    def test_in_play_fixture_is_pending(self):
+        fx = _fixture(state=FixtureState.IN_PLAY, score=None)
+        outcome = evaluate_selection(**_leg(candidate_fixtures=(fx,), aliases=self._aliases()))
+        self.assertEqual(outcome.status, Outcome.PENDING)
+        self.assertEqual(outcome.reason, "result_not_yet_available")
+
+    def test_postponed_fixture_is_pending(self):
+        fx = _fixture(state=FixtureState.POSTPONED, score=None)
+        outcome = evaluate_selection(**_leg(candidate_fixtures=(fx,), aliases=self._aliases()))
+        self.assertEqual(outcome.status, Outcome.PENDING)
+        self.assertEqual(outcome.reason, "result_not_yet_available")
+
+    def test_cancelled_fixture_is_unresolved_not_pending(self):
+        # F9_STEP4_REVIEW.md S4-06: a cancelled fixture is not an ordinary
+        # "not yet available" result and must not be reported as pending.
+        fx = _fixture(state=FixtureState.CANCELLED, score=None)
+        outcome = evaluate_selection(**_leg(candidate_fixtures=(fx,), aliases=self._aliases()))
+        self.assertEqual(outcome.status, Outcome.UNRESOLVED)
+        self.assertEqual(outcome.reason, "fixture_cancelled")
+
+    def test_abandoned_fixture_is_unresolved_not_pending(self):
+        fx = _fixture(state=FixtureState.ABANDONED, score=None)
+        outcome = evaluate_selection(**_leg(candidate_fixtures=(fx,), aliases=self._aliases()))
+        self.assertEqual(outcome.status, Outcome.UNRESOLVED)
+        self.assertEqual(outcome.reason, "fixture_abandoned")
+
+    def test_awarded_fixture_is_unresolved_not_pending(self):
+        fx = _fixture(state=FixtureState.AWARDED, score=None)
+        outcome = evaluate_selection(**_leg(candidate_fixtures=(fx,), aliases=self._aliases()))
+        self.assertEqual(outcome.status, Outcome.UNRESOLVED)
+        self.assertEqual(outcome.reason, "fixture_awarded_unverified_policy")
+
+    def test_unknown_fixture_state_is_unresolved_not_pending(self):
+        fx = _fixture(state=FixtureState.UNKNOWN, score=None)
+        outcome = evaluate_selection(**_leg(candidate_fixtures=(fx,), aliases=self._aliases()))
+        self.assertEqual(outcome.status, Outcome.UNRESOLVED)
+        self.assertEqual(outcome.reason, "fixture_state_unknown")
+
+    def test_finished_penalties_without_score_is_unresolved_missing_period(self):
+        fx = _fixture(state=FixtureState.FINISHED_PENALTIES, score=None)
         outcome = evaluate_selection(**_leg(candidate_fixtures=(fx,), aliases=self._aliases()))
         self.assertEqual(outcome.status, Outcome.UNRESOLVED)
         self.assertEqual(outcome.reason, "missing_period")
@@ -143,6 +189,24 @@ class RuleDispatchTests(unittest.TestCase):
         self.assertEqual(outcome.status, Outcome.WON)  # Arsenal (home) scored 2, line 1.5
         self.assertEqual(outcome.rule_id, "team_total_over_under")
 
+    def test_literal_home_over_under_resolves_without_team_alias(self):
+        # F9_STEP4_REVIEW.md S4-07: "Home"/"Away" here name a side, not a
+        # club, so this must resolve without any team alias lookup.
+        fx = _fixture(score=RegulationScore(2, 1))
+        outcome = evaluate_selection(
+            **_leg(market="Home Over/Under", pick="Over", specifier="1.5",
+                   candidate_fixtures=(fx,), aliases=self._aliases()))
+        self.assertEqual(outcome.status, Outcome.WON)  # home scored 2, line 1.5
+        self.assertEqual(outcome.rule_id, "team_total_over_under")
+
+    def test_literal_away_over_under_resolves_without_team_alias(self):
+        fx = _fixture(score=RegulationScore(2, 1))
+        outcome = evaluate_selection(
+            **_leg(market="Away Over/Under", pick="Over", specifier="1.5",
+                   candidate_fixtures=(fx,), aliases=self._aliases()))
+        self.assertEqual(outcome.status, Outcome.LOST)  # away scored 1, line 1.5
+        self.assertEqual(outcome.rule_id, "team_total_over_under")
+
     def test_team_total_over_under_unresolvable_team_name_is_invalid_input(self):
         # "Chelsea" is a real, verified team name (so classify() supports the
         # market) but isn't either side of the matched Arsenal-Everton
@@ -154,6 +218,26 @@ class RuleDispatchTests(unittest.TestCase):
         self.assertEqual(outcome.status, Outcome.UNRESOLVED)
         self.assertEqual(outcome.reason, "invalid_input")
         self.assertEqual(outcome.rule_id, "team_total_over_under")
+
+
+class ConflictingEvidencePropagationTests(unittest.TestCase):
+    """F9_STEP4_REVIEW.md S4-02: contradictory evidence must abort the leg
+    evaluation with MatchingError, not silently resolve by list order."""
+
+    def test_conflicting_fixture_observations_raise_through_evaluate_selection(self):
+        fx_a = _fixture()
+        fx_b = _fixture(home="Chelsea", away="Fulham")  # same default source_fixture_id="1"
+        with self.assertRaises(MatchingError):
+            evaluate_selection(**_leg(candidate_fixtures=(fx_a, fx_b)))
+
+
+class KickoffUtcOffsetTests(unittest.TestCase):
+    def test_non_utc_offset_is_rejected(self):
+        from portfolio.results_tracking.fixtures import InvalidFixtureError
+        with self.assertRaises(InvalidFixtureError):
+            KickoffTime(raw="2026-10-25T00:30:00+02:00", precision="exact",
+                        utc=datetime(2026, 10, 25, 0, 30, tzinfo=timezone(timedelta(hours=2))),
+                        timezone_evidence="provider-documented +02:00")
 
 
 if __name__ == "__main__":

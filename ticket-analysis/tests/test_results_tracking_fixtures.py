@@ -3,7 +3,7 @@
 Pure-construction tests; no sources, no network, no run directories needed.
 """
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from portfolio.results_tracking.fixtures import (
     Fixture, FixtureProvenance, FixtureState, InvalidFixtureError, KickoffTime,
@@ -48,6 +48,15 @@ class KickoffTimeTests(unittest.TestCase):
         with self.assertRaises(InvalidFixtureError):
             KickoffTime(raw="2026-10-24 14:00:00", precision="exact",
                         utc=datetime(2026, 10, 24, 14, 0), timezone_evidence="assumed")
+
+    def test_non_utc_offset_rejected(self):
+        # F9_STEP4_REVIEW.md S4-08: a field named `utc` must actually be
+        # UTC (offset zero), not merely any aware timezone -- otherwise a
+        # later date-only comparison could read the wrong calendar date.
+        with self.assertRaises(InvalidFixtureError):
+            KickoffTime(raw="2026-10-25T00:30:00+02:00", precision="exact",
+                        utc=datetime(2026, 10, 25, 0, 30, tzinfo=timezone(timedelta(hours=2))),
+                        timezone_evidence="provider-documented +02:00")
 
 
 class FixtureProvenanceTests(unittest.TestCase):

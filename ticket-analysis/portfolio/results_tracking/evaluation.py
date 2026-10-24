@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from .fixtures import Fixture
+from .fixtures import Fixture, FixtureState
 from .matching import Alias, MatchStatus, VerifiedMapping, match_selection_event, resolve_alias
 from .reporting import LegOutcome, Outcome
 from .rules import registry
@@ -28,7 +28,28 @@ _LITERAL_SIDE_MARKETS = {
     "Away Team to Win Either Half": "away",
 }
 
+# Likewise literal for team_total_over_under's two generic markets -- "Home"/
+# "Away" here name a side, not a club, so resolving them through the team
+# alias table (as a real club name like "Arsenal" requires) is wrong and
+# would always fail to resolve (F9_STEP4_REVIEW.md S4-07).
+_LITERAL_TEAM_TOTAL_MARKETS = {"Home Over/Under": "home", "Away Over/Under": "away"}
+
 _TEAM_TOTAL_SUFFIX = " Over/Under"
+
+# SCHEDULED/IN_PLAY/POSTPONED can still conclude normally, so PENDING is an
+# honest "not yet" answer. The remaining non-finished states cannot (or are
+# not known to be able to) still produce an ordinary regulation result, so
+# reporting them as PENDING would wrongly imply a future resolution is still
+# coming; each gets its own named UNRESOLVED reason instead
+# (F9_STEP4_REVIEW.md S4-06). None of these states is voided automatically --
+# no verified provider void policy exists for them.
+_PENDING_STATES = frozenset({FixtureState.SCHEDULED, FixtureState.IN_PLAY, FixtureState.POSTPONED})
+_TERMINAL_STATE_REASONS = {
+    FixtureState.CANCELLED: "fixture_cancelled",
+    FixtureState.ABANDONED: "fixture_abandoned",
+    FixtureState.AWARDED: "fixture_awarded_unverified_policy",
+    FixtureState.UNKNOWN: "fixture_state_unknown",
+}
 
 # rule_id -> how to call its (already period-bound) evaluator, given
 # (pick, specifier, score, side). Keeps the family-specific calling
@@ -77,11 +98,29 @@ def _resolve_side(market: str, provider: str, rule_id: str, fixture: Fixture,
     if market in _LITERAL_SIDE_MARKETS:
         return _LITERAL_SIDE_MARKETS[market], None
     if rule_id == "team_total_over_under":
+        if market in _LITERAL_TEAM_TOTAL_MARKETS:
+            return _LITERAL_TEAM_TOTAL_MARKETS[market], None
         side = _resolve_team_total_side(market, provider, fixture, aliases)
         if side is None:
             return None, "invalid_input"
         return side, None
     return None, "invalid_input"
+
+
+def match_decision_for_leg(
+    *, provider: str, provider_event_id: str | None, event_display: str, league_display: str,
+    kickoff, candidate_fixtures: Sequence[Fixture], aliases: Sequence[Alias] = (),
+    verified_mappings: Sequence[VerifiedMapping] = (),
+):
+    """Exposes the same MatchDecision evaluate_selection() computes
+    internally, for a caller (the evaluate CLI's report) that needs to
+    retain which fixture a leg actually matched -- source and
+    source_fixture_id -- for independent replay (F9_STEP4_REVIEW.md S4-04).
+    Deliberately a thin wrapper, not a second matching implementation."""
+    return match_selection_event(
+        provider=provider, provider_event_id=provider_event_id, event_display=event_display,
+        league_display=league_display, kickoff=kickoff, candidate_fixtures=candidate_fixtures,
+        aliases=aliases, verified_mappings=verified_mappings)
 
 
 def evaluate_selection(
@@ -109,8 +148,10 @@ def evaluate_selection(
         return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, "fixture_not_matched")
     fixture = decision.fixture
 
-    if not fixture.is_finished:
+    if fixture.state in _PENDING_STATES:
         return LegOutcome(leg_id, Outcome.PENDING, rule_id, "result_not_yet_available")
+    if not fixture.is_finished:
+        return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, _TERMINAL_STATE_REASONS[fixture.state])
     if fixture.regulation_score is None:
         return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, "missing_period")
 

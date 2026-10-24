@@ -21,6 +21,13 @@ football_data_import.py) is football-only, so a Fixture here is always a
 football fixture by construction; sport gating for a ticket leg already
 happens in rules/registry.classify(), which is where a genuinely
 non-football leg is rejected.
+
+Reversed source orientation (a source disagreeing on which side is home) is
+NOT modeled or transformed anywhere in this module -- neither tier 1's
+VerifiedMapping nor tier 2's exact check carries an orientation flip. A
+reversed fixture simply fails the ordered (home, away) consistency check
+used by both tiers and falls through conservatively (unmatched/stale), never
+silently evaluated in the wrong orientation. F9_STEP4_REVIEW.md S4-01.
 """
 from __future__ import annotations
 
@@ -66,10 +73,19 @@ class Alias:
 @dataclass(frozen=True)
 class VerifiedMapping:
     """A previously verified provider-event to source-fixture mapping
-    (tier 1). Records the exact display strings seen at verification time,
-    so a later call can re-check them against the *current* inputs rather
-    than trusting the provider_event_id forever -- a changed league/team
-    display for the same ID fails the recheck instead of silently matching."""
+    (tier 1). Records the exact display strings seen at verification time on
+    *both* sides -- the provider's own (league_display/home_display/
+    away_display) and the source's own (source_competition/
+    source_home_team/source_away_team) -- so a later call can re-check both
+    the provider selection *and* the current target fixture's own recorded
+    facts against what was true at verification time, rather than trusting
+    the provider_event_id (for the provider side) or the (source,
+    source_fixture_id) key (for the target side) forever. A changed league/
+    team display on either side fails the recheck instead of silently
+    matching (F9_STEP4_REVIEW.md S4-01). The source-side fields are compared
+    by exact string equality against the fixture's own home_team/away_team/
+    competition -- not through the alias table -- so tier 1 keeps working
+    without requiring any aliases to be registered."""
     provider: str
     provider_event_id: str
     league_display: str
@@ -77,6 +93,9 @@ class VerifiedMapping:
     away_display: str
     source: str
     source_fixture_id: str
+    source_competition: str
+    source_home_team: str
+    source_away_team: str
     verified_at: str
     evidence: str
 
@@ -97,11 +116,45 @@ class MatchDecision:
 
 
 def resolve_alias(aliases: Sequence[Alias], namespace: str, display_name: str) -> str | None:
-    """None when no alias is registered -- never guessed, never fuzzy here."""
+    """None when no alias is registered -- never guessed, never fuzzy here.
+    Conflicting aliases for the same (namespace, display_name) are rejected
+    by validate_aliases() before this is ever called with contradictory
+    evidence; this function itself never picks "whichever comes first"."""
     for alias in aliases:
         if alias.namespace == namespace and alias.display_name == display_name:
             return alias.canonical
     return None
+
+
+def validate_aliases(aliases: Sequence[Alias]) -> None:
+    """Rejects two Alias entries for the same (namespace, display_name) that
+    disagree on canonical -- contradictory identity evidence must be
+    reported, never silently resolved by whichever entry happens to come
+    first in the list (F9_STEP4_REVIEW.md S4-02)."""
+    seen: dict[tuple[str, str], str] = {}
+    for alias in aliases:
+        key = (alias.namespace, alias.display_name)
+        if key in seen and seen[key] != alias.canonical:
+            raise MatchingError(
+                f"conflicting aliases for namespace={key[0]!r} display_name={key[1]!r}: "
+                f"{seen[key]!r} vs {alias.canonical!r}")
+        seen[key] = alias.canonical
+
+
+def validate_candidate_fixtures(candidate_fixtures: Sequence[Fixture]) -> None:
+    """Rejects two Fixture records sharing (source, source_fixture_id) whose
+    facts disagree -- e.g. two conflicting score observations for the same
+    source fixture id. Exact duplicates (identical in every field) are not
+    an error. Order must never decide which observation wins
+    (F9_STEP4_REVIEW.md S4-02)."""
+    seen: dict[tuple[str, str], Fixture] = {}
+    for fixture in candidate_fixtures:
+        key = (fixture.provenance.source, fixture.provenance.source_fixture_id)
+        if key in seen and seen[key] != fixture:
+            raise MatchingError(
+                f"conflicting fixture records for source={key[0]!r} "
+                f"source_fixture_id={key[1]!r}: observations disagree")
+        seen[key] = fixture
 
 
 def split_event_display(event_display: str) -> tuple[str, str]:
@@ -176,6 +229,8 @@ def match_selection_event(
     """Resolve one provider selection's event to a Fixture, or explain why
     it can't be resolved yet. Never returns MATCHED except through tier 1's
     recheck or tier 2's unique-exact-match path."""
+    validate_aliases(aliases)
+    validate_candidate_fixtures(candidate_fixtures)
     home_display, away_display = split_event_display(event_display)
 
     if provider_event_id:
@@ -194,6 +249,20 @@ def match_selection_event(
             if fixture is None:
                 return MatchDecision(MatchStatus.UNMATCHED, None, (), "verified_mapping",
                                       "verified_mapping_fixture_not_supplied")
+            # The mapping only proves the provider-selection side matched
+            # this target once, at verification time. Recheck the target
+            # fixture's *current* own recorded facts against that same
+            # verification evidence every call, by exact equality (no alias
+            # lookup, so tier 1 keeps working without requiring aliases) --
+            # a fixture record that has since changed teams/competition, or
+            # is reversed in orientation, must not still be accepted just
+            # because its (source, source_fixture_id) key is unchanged
+            # (F9_STEP4_REVIEW.md S4-01).
+            if (fixture.competition != mapping.source_competition
+                    or fixture.home_team != mapping.source_home_team
+                    or fixture.away_team != mapping.source_away_team):
+                return MatchDecision(MatchStatus.UNMATCHED, None, (), "verified_mapping",
+                                      "verified_mapping_target_fixture_changed")
             return MatchDecision(
                 MatchStatus.MATCHED, fixture,
                 (MatchCandidate(fixture, ("verified_mapping",)),), "verified_mapping", None)

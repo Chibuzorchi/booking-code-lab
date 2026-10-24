@@ -54,6 +54,14 @@ _RULE_VERSIONS = {
 }
 
 
+def rule_versions() -> dict:
+    """A copy of the rule_id -> version table, for a caller (e.g. the
+    evaluate CLI's report) that needs to record which rule versions
+    produced a given evaluation, without reaching into the private
+    _RULE_VERSIONS dict directly."""
+    return dict(_RULE_VERSIONS)
+
+
 @dataclass(frozen=True)
 class Classification:
     status: str  # "supported" or "unsupported"

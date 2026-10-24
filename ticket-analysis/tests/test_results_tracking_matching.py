@@ -10,7 +10,7 @@ from portfolio.results_tracking.fixtures import (
 )
 from portfolio.results_tracking.matching import (
     Alias, MatchingError, MatchStatus, VerifiedMapping, match_selection_event,
-    split_event_display,
+    split_event_display, validate_candidate_fixtures,
 )
 
 
@@ -206,6 +206,8 @@ class VerifiedMappingTierTests(unittest.TestCase):
             provider="sportybet", provider_event_id="sr:match:1",
             league_display="England · Premier League", home_display="Arsenal",
             away_display="Everton", source="api_football", source_fixture_id="1",
+            source_competition="Premier League", source_home_team="Arsenal FC",
+            source_away_team="Everton FC",
             verified_at="2026-10-23T00:00:00Z", evidence="hand-verified in step 2")
         decision = match_selection_event(
             provider="sportybet", provider_event_id="sr:match:1", event_display="Arsenal - Everton",
@@ -224,6 +226,8 @@ class VerifiedMappingTierTests(unittest.TestCase):
             provider="sportybet", provider_event_id="sr:match:1",
             league_display="England · Premier League", home_display="Arsenal",
             away_display="Everton", source="api_football", source_fixture_id="1",
+            source_competition="Premier League", source_home_team="Arsenal FC",
+            source_away_team="Everton FC",
             verified_at="2026-10-23T00:00:00Z", evidence="hand-verified in step 2")
         decision = match_selection_event(
             provider="sportybet", provider_event_id="sr:match:1", event_display="Arsenal - Everton",
@@ -238,6 +242,8 @@ class VerifiedMappingTierTests(unittest.TestCase):
             provider="sportybet", provider_event_id="sr:match:1",
             league_display="England · Premier League", home_display="Arsenal",
             away_display="Everton", source="api_football", source_fixture_id="1",
+            source_competition="Premier League", source_home_team="Arsenal FC",
+            source_away_team="Everton FC",
             verified_at="2026-10-23T00:00:00Z", evidence="hand-verified in step 2")
         decision = match_selection_event(
             provider="sportybet", provider_event_id="sr:match:1", event_display="Arsenal - Everton",
@@ -253,6 +259,8 @@ class VerifiedMappingTierTests(unittest.TestCase):
             provider="sportybet", provider_event_id="sr:match:999",
             league_display="England · Premier League", home_display="Arsenal",
             away_display="Everton", source="api_football", source_fixture_id="1",
+            source_competition="Premier League", source_home_team="Arsenal FC",
+            source_away_team="Everton FC",
             verified_at="2026-10-23T00:00:00Z", evidence="hand-verified in step 2")
         decision = match_selection_event(
             provider="sportybet", provider_event_id="sr:match:1", event_display="Arsenal - Everton",
@@ -260,6 +268,83 @@ class VerifiedMappingTierTests(unittest.TestCase):
             kickoff=KickoffTime(raw="2026-10-24", precision="date_only"),
             candidate_fixtures=[fixture], verified_mappings=[mapping])
         self.assertEqual(decision.status, MatchStatus.UNMATCHED)
+
+    def test_verified_mapping_rejects_target_fixture_that_changed_since_verification(self):
+        # F9_STEP4_REVIEW.md S4-01 reproduction: the mapping was verified
+        # against an Arsenal-Everton fixture, but the (source,
+        # source_fixture_id) key now resolves to a different match entirely.
+        changed_fixture = _fixture("Chelsea FC", "Fulham FC", competition="Wrong League")
+        mapping = VerifiedMapping(
+            provider="sportybet", provider_event_id="sr:match:1",
+            league_display="England · Premier League", home_display="Arsenal",
+            away_display="Everton", source="api_football", source_fixture_id="1",
+            source_competition="Premier League", source_home_team="Arsenal FC",
+            source_away_team="Everton FC",
+            verified_at="2026-10-23T00:00:00Z", evidence="hand-verified in step 2")
+        decision = match_selection_event(
+            provider="sportybet", provider_event_id="sr:match:1", event_display="Arsenal - Everton",
+            league_display="England · Premier League",
+            kickoff=KickoffTime(raw="2026-10-24", precision="date_only"),
+            candidate_fixtures=[changed_fixture], verified_mappings=[mapping])
+        self.assertEqual(decision.status, MatchStatus.UNMATCHED)
+        self.assertEqual(decision.reason, "verified_mapping_target_fixture_changed")
+
+    def test_verified_mapping_rejects_reversed_orientation(self):
+        # The comments previously implied reversed orientation could pass
+        # tier 1; it must not -- a fixture with home/away swapped relative
+        # to the mapping's verified evidence fails the exact-equality
+        # recheck, never silently evaluated in the wrong orientation.
+        reversed_fixture = _fixture("Everton FC", "Arsenal FC")
+        mapping = VerifiedMapping(
+            provider="sportybet", provider_event_id="sr:match:1",
+            league_display="England · Premier League", home_display="Arsenal",
+            away_display="Everton", source="api_football", source_fixture_id="1",
+            source_competition="Premier League", source_home_team="Arsenal FC",
+            source_away_team="Everton FC",
+            verified_at="2026-10-23T00:00:00Z", evidence="hand-verified in step 2")
+        decision = match_selection_event(
+            provider="sportybet", provider_event_id="sr:match:1", event_display="Arsenal - Everton",
+            league_display="England · Premier League",
+            kickoff=KickoffTime(raw="2026-10-24", precision="date_only"),
+            candidate_fixtures=[reversed_fixture], verified_mappings=[mapping])
+        self.assertEqual(decision.status, MatchStatus.UNMATCHED)
+        self.assertEqual(decision.reason, "verified_mapping_target_fixture_changed")
+
+
+class ConflictingEvidenceTests(unittest.TestCase):
+    """F9_STEP4_REVIEW.md S4-02: contradictory evidence must raise, and must
+    raise the same way regardless of list order (never 'first one wins')."""
+
+    def test_conflicting_aliases_for_same_display_name_raise_regardless_of_order(self):
+        forward = [
+            Alias("sportybet_team", "Arsenal", "Arsenal"),
+            Alias("sportybet_team", "Arsenal", "Chelsea"),
+        ]
+        backward = list(reversed(forward))
+        for aliases in (forward, backward):
+            with self.assertRaises(MatchingError):
+                match_selection_event(
+                    provider="sportybet", provider_event_id="1",
+                    event_display="Arsenal - Everton",
+                    league_display="England · Premier League",
+                    kickoff=KickoffTime(raw="2026-10-24", precision="date_only"),
+                    candidate_fixtures=[], aliases=aliases)
+
+    def test_conflicting_fixture_observations_for_same_source_id_raise_regardless_of_order(self):
+        fx_a = _fixture("Arsenal FC", "Everton FC")
+        fx_b = _fixture("Chelsea FC", "Fulham FC")  # same default source_fixture_id="1"
+        for candidate_fixtures in ([fx_a, fx_b], [fx_b, fx_a]):
+            with self.assertRaises(MatchingError):
+                match_selection_event(
+                    provider="sportybet", provider_event_id="1",
+                    event_display="Arsenal - Everton",
+                    league_display="England · Premier League",
+                    kickoff=KickoffTime(raw="2026-10-24", precision="date_only"),
+                    candidate_fixtures=candidate_fixtures, aliases=[])
+
+    def test_exact_duplicate_fixture_observations_are_not_a_conflict(self):
+        fx = _fixture("Arsenal FC", "Everton FC")
+        validate_candidate_fixtures([fx, fx])  # no raise
 
 
 class FuzzyTierTests(unittest.TestCase):

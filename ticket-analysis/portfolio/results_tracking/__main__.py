@@ -21,11 +21,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..registry import RunRegistry, RunNotFoundError, RunStateError
-from .evaluation import evaluate_selection
+from .evaluation import evaluate_selection, match_decision_for_leg
 from .fixtures import Fixture, FixtureProvenance, FixtureState, InvalidFixtureError, KickoffTime
 from .inputs import PopulationAuditError, audit_run
 from .matching import Alias, MatchingError, VerifiedMapping
-from .reporting import Rate, aggregate_ticket, compute_percentages, counts_from_ticket_outcomes
+from .reporting import Outcome, Rate, TicketOutcome, aggregate_ticket, compute_percentages, counts_from_ticket_outcomes
+from .rules import registry as rule_registry
 from .rules.provider_types import verify_bet_type
 from .rules.scores import InvalidScoreError, RegulationScore
 
@@ -36,27 +37,43 @@ class EvaluationInputError(ValueError):
 
 
 def _get(container, key, context):
+    container = _require_dict(container, context)
     if key not in container:
         raise EvaluationInputError(f"{context}: missing required field {key!r}")
     return container[key]
 
 
+def _require_dict(value, context):
+    if not isinstance(value, dict):
+        raise EvaluationInputError(f"{context}: expected a JSON object, got {type(value).__name__}")
+    return value
+
+
+def _require_list(value, context):
+    if not isinstance(value, list):
+        raise EvaluationInputError(f"{context}: expected a JSON array, got {type(value).__name__}")
+    return value
+
+
 def _parse_kickoff(payload, context):
+    payload = _require_dict(payload, context)
     utc_raw = payload.get("utc")
     utc = datetime.fromisoformat(utc_raw) if utc_raw else None
     return KickoffTime(raw=_get(payload, "raw", context), precision=_get(payload, "precision", context),
                         utc=utc, timezone_evidence=payload.get("timezone_evidence"))
 
 
-def _parse_regulation_score(payload):
+def _parse_regulation_score(payload, context):
     if payload is None:
         return None
-    return RegulationScore(home=payload["home"], away=payload["away"],
+    payload = _require_dict(payload, context)
+    return RegulationScore(home=_get(payload, "home", context), away=_get(payload, "away", context),
                             ht_home=payload.get("ht_home"), ht_away=payload.get("ht_away"))
 
 
 def _parse_fixture(payload, index):
     context = f"fixtures[{index}]"
+    payload = _require_dict(payload, context)
     provenance_payload = _get(payload, "provenance", context)
     provenance = FixtureProvenance(
         source=_get(provenance_payload, "source", context),
@@ -69,11 +86,12 @@ def _parse_fixture(payload, index):
         away_team=_get(payload, "away_team", context),
         kickoff=_parse_kickoff(_get(payload, "kickoff", context), context),
         state=FixtureState(_get(payload, "state", context)),
-        regulation_score=_parse_regulation_score(payload.get("regulation_score")))
+        regulation_score=_parse_regulation_score(payload.get("regulation_score"), context))
 
 
 def _parse_alias(payload, index):
     context = f"aliases[{index}]"
+    payload = _require_dict(payload, context)
     return Alias(namespace=_get(payload, "namespace", context),
                  display_name=_get(payload, "display_name", context),
                  canonical=_get(payload, "canonical", context))
@@ -81,16 +99,21 @@ def _parse_alias(payload, index):
 
 def _parse_verified_mapping(payload, index):
     context = f"verified_mappings[{index}]"
+    payload = _require_dict(payload, context)
     return VerifiedMapping(
         provider=_get(payload, "provider", context), provider_event_id=_get(payload, "provider_event_id", context),
         league_display=_get(payload, "league_display", context), home_display=_get(payload, "home_display", context),
         away_display=_get(payload, "away_display", context), source=_get(payload, "source", context),
         source_fixture_id=_get(payload, "source_fixture_id", context),
+        source_competition=_get(payload, "source_competition", context),
+        source_home_team=_get(payload, "source_home_team", context),
+        source_away_team=_get(payload, "source_away_team", context),
         verified_at=_get(payload, "verified_at", context), evidence=_get(payload, "evidence", context))
 
 
 def _parse_leg(payload, ticket_index, leg_index):
     context = f"tickets[{ticket_index}].legs[{leg_index}]"
+    payload = _require_dict(payload, context)
     return dict(
         leg_id=_get(payload, "leg_id", context), provider=_get(payload, "provider", context),
         provider_event_id=payload.get("provider_event_id"),
@@ -106,39 +129,136 @@ def _serialize_rate(rate: Rate):
             "value": rate.value, "reason": rate.reason}
 
 
-def evaluate_run(evidence: dict) -> dict:
+def _load_audited_population(audit_dir: Path) -> dict:
+    """Reads a prior `audit` command's output directory and returns
+    row_id -> {run_id, code, num_legs, num_selections} for every retained
+    ticket row across every run it inventoried. Verifies every manifested
+    file's hash first, so a changed/corrupted audit artifact is rejected
+    rather than silently trusted (F9_STEP4_REVIEW.md S4-03)."""
+    manifest_path = audit_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise EvaluationInputError(f"--audit-dir {audit_dir}: cannot read manifest.json: {error}")
+    for rel_path, expected_sha256 in _require_dict(manifest, "audit manifest").get("files", {}).items():
+        actual_path = audit_dir / rel_path
+        actual_sha256 = hashlib.sha256(actual_path.read_bytes()).hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise EvaluationInputError(
+                f"--audit-dir {audit_dir}: {rel_path} does not match its manifested sha256 "
+                "-- audit artifact changed or corrupted since it was written")
+
+    summary = json.loads((audit_dir / "summary.json").read_text(encoding="utf-8"))
+    audit_rows = {}
+    for run in _require_dict(summary, "audit summary").get("runs", []):
+        run_id = run["run_id"]
+        run_report = json.loads((audit_dir / f"{run_id}.json").read_text(encoding="utf-8"))
+        for row in run_report.get("rows", []):
+            row_id = row["row_id"]
+            if row_id in audit_rows:
+                raise EvaluationInputError(
+                    f"--audit-dir {audit_dir}: row_id {row_id!r} appears in more than one "
+                    "audited run")
+            audit_rows[row_id] = {"run_id": run_id, "code": row.get("code"),
+                                   "num_legs": row.get("num_legs"),
+                                   "num_selections": row.get("num_selections")}
+    return audit_rows
+
+
+def evaluate_run(evidence: dict, audit_rows: dict | None = None) -> dict:
     """Pure: evidence in, a report dict out. No filesystem access, so this
-    is directly unit-testable and is exactly what offline replay re-runs."""
-    fixtures = tuple(_parse_fixture(f, i) for i, f in enumerate(evidence.get("fixtures", [])))
-    aliases = tuple(_parse_alias(a, i) for i, a in enumerate(evidence.get("aliases", [])))
-    verified_mappings = tuple(_parse_verified_mapping(m, i)
-                               for i, m in enumerate(evidence.get("verified_mappings", [])))
+    is directly unit-testable and is exactly what offline replay re-runs.
+
+    When audit_rows is given (from _load_audited_population), every ticket
+    in evidence["tickets"] must carry a "row_id" naming one of its keys;
+    unknown or duplicate row_ids are rejected, and the denominator is the
+    full audited row set -- an audited row missing from evidence becomes an
+    explicit unresolved ticket rather than silently shrinking the population
+    (F9_STEP4_REVIEW.md S4-03). When audit_rows is None, evaluate_run runs as
+    a synthetic/offline harness over whatever tickets evidence supplies,
+    with no population anchoring at all."""
+    evidence = _require_dict(evidence, "evidence")
+    fixtures = tuple(_parse_fixture(f, i) for i, f in enumerate(_require_list(
+        evidence.get("fixtures", []), "evidence.fixtures")))
+    aliases = tuple(_parse_alias(a, i) for i, a in enumerate(_require_list(
+        evidence.get("aliases", []), "evidence.aliases")))
+    verified_mappings = tuple(_parse_verified_mapping(m, i) for i, m in enumerate(_require_list(
+        evidence.get("verified_mappings", []), "evidence.verified_mappings")))
 
     ticket_reports = []
     ticket_outcomes = []
-    for t_index, ticket in enumerate(_get(evidence, "tickets", "evidence")):
+    seen_row_ids = set()
+    for t_index, ticket in enumerate(_require_list(_get(evidence, "tickets", "evidence"), "evidence.tickets")):
         t_context = f"tickets[{t_index}]"
+        ticket = _require_dict(ticket, t_context)
         ticket_id = _get(ticket, "ticket_id", t_context)
         provider = _get(ticket, "provider", t_context)
         raw_bet_type = _get(ticket, "raw_bet_type", t_context)
         structure_verified = verify_bet_type(provider, raw_bet_type)["status"] == "verified"
 
+        row_id = None
+        if audit_rows is not None:
+            row_id = _get(ticket, "row_id", t_context)
+            if row_id not in audit_rows:
+                raise EvaluationInputError(
+                    f"{t_context}: row_id {row_id!r} is not in the audited population")
+            if row_id in seen_row_ids:
+                raise EvaluationInputError(f"{t_context}: row_id {row_id!r} repeated across tickets")
+            seen_row_ids.add(row_id)
+
         leg_outcomes = []
-        for l_index, leg_payload in enumerate(_get(ticket, "legs", t_context)):
+        seen_leg_ids = set()
+        for l_index, leg_payload in enumerate(_require_list(
+                _get(ticket, "legs", t_context), f"{t_context}.legs")):
             leg_kwargs = _parse_leg(leg_payload, t_index, l_index)
+            if leg_kwargs["leg_id"] in seen_leg_ids:
+                raise EvaluationInputError(
+                    f"{t_context}: duplicate leg_id {leg_kwargs['leg_id']!r}")
+            seen_leg_ids.add(leg_kwargs["leg_id"])
             leg_outcomes.append(evaluate_selection(
                 **leg_kwargs, candidate_fixtures=fixtures, aliases=aliases,
                 verified_mappings=verified_mappings))
         ticket_outcome = aggregate_ticket(leg_outcomes, structure_verified=structure_verified)
         ticket_outcomes.append(ticket_outcome)
+
+        # Retain, per leg, which fixture actually matched (tier + source +
+        # source_fixture_id) alongside the leg's own evaluated result, so a
+        # later caller can independently replay/audit the matching decision
+        # without re-deriving it (F9_STEP4_REVIEW.md S4-04).
+        leg_reports = []
+        for leg_payload, leg in zip(_get(ticket, "legs", t_context), ticket_outcome.legs):
+            leg_kwargs = _parse_leg(leg_payload, t_index, len(leg_reports))
+            decision = match_decision_for_leg(
+                provider=leg_kwargs["provider"], provider_event_id=leg_kwargs["provider_event_id"],
+                event_display=leg_kwargs["event_display"], league_display=leg_kwargs["league_display"],
+                kickoff=leg_kwargs["kickoff"], candidate_fixtures=fixtures, aliases=aliases,
+                verified_mappings=verified_mappings)
+            matched_fixture = None
+            if decision.fixture is not None:
+                matched_fixture = {"source": decision.fixture.provenance.source,
+                                    "source_fixture_id": decision.fixture.provenance.source_fixture_id}
+            leg_reports.append({
+                "leg_id": leg.leg_id, "status": leg.status.value,
+                "rule_id": leg.rule_id, "reason": leg.reason,
+                "match_tier": decision.tier, "matched_fixture": matched_fixture,
+            })
         ticket_reports.append({
             "ticket_id": ticket_id,
+            "row_id": row_id,
             "status": ticket_outcome.status.value,
             "reason": ticket_outcome.reason,
             "proxy_all_legs_won": ticket_outcome.proxy_all_legs_won,
-            "legs": [{"leg_id": leg.leg_id, "status": leg.status.value,
-                      "rule_id": leg.rule_id, "reason": leg.reason} for leg in ticket_outcome.legs],
+            "legs": leg_reports,
         })
+
+    if audit_rows is not None:
+        for row_id in sorted(set(audit_rows) - seen_row_ids):
+            not_supplied = TicketOutcome(Outcome.UNRESOLVED, "not_supplied_in_evidence", False, ())
+            ticket_outcomes.append(not_supplied)
+            ticket_reports.append({
+                "ticket_id": None, "row_id": row_id, "status": not_supplied.status.value,
+                "reason": not_supplied.reason, "proxy_all_legs_won": False, "legs": [],
+            })
 
     counts = counts_from_ticket_outcomes(ticket_outcomes)
     percentages = compute_percentages(counts)
@@ -153,6 +273,7 @@ def evaluate_run(evidence: dict) -> dict:
             "eventual_binary_win_bound_low": _serialize_rate(percentages.eventual_binary_win_bound_low),
             "eventual_binary_win_bound_high": _serialize_rate(percentages.eventual_binary_win_bound_high),
         },
+        "rule_versions": dict(rule_registry.rule_versions()),
     }
 
 
@@ -232,11 +353,18 @@ def _audit_command(args):
 
 def _evaluate_command(args):
     try:
-        with args.input.open("r", encoding="utf-8") as stream:
-            evidence = json.load(stream)
-        report = evaluate_run(evidence)
+        raw_evidence_bytes = args.input.read_bytes()
+        evidence = json.loads(raw_evidence_bytes)
+        audit_rows = _load_audited_population(args.audit_dir) if args.audit_dir else None
+        report = evaluate_run(evidence, audit_rows=audit_rows)
         report["generated_at"] = datetime.now(timezone.utc).isoformat()
+        report["population_source"] = str(args.audit_dir.resolve()) if args.audit_dir else None
         args.output.mkdir(parents=True, exist_ok=False)
+        # The raw evidence bytes are preserved verbatim (not re-serialized)
+        # and hashed into the manifest, so a later caller can independently
+        # replay this exact evaluation even after the original --input file
+        # is deleted or changed (F9_STEP4_REVIEW.md S4-04).
+        (args.output / "evidence.json").write_bytes(raw_evidence_bytes)
         write_json(args.output / "report.json", report)
         write_json_atomic(args.output / "manifest.json", {
             "generated_at": report["generated_at"],
@@ -277,6 +405,13 @@ def main(argv=None):
                          "fixtures/aliases/verified mappings/tickets. No network.")
     evaluate_parser.add_argument("--input", required=True, type=Path,
                                  help="Evidence JSON file (fixtures, aliases, verified_mappings, tickets)")
+    evaluate_parser.add_argument(
+        "--audit-dir", type=Path, default=None,
+        help="A prior 'audit' command's output directory. When given, every evidence "
+             "ticket must carry a row_id from that audited population, and the "
+             "denominator is the full audited row set (an audited row missing from "
+             "evidence becomes an explicit unresolved ticket). When omitted, evaluate "
+             "runs as a synthetic/offline harness with no population anchoring.")
     evaluate_parser.add_argument("--output", required=True, type=Path,
                                  help="New evaluation directory; existing directories are refused")
     evaluate_parser.set_defaults(handler=_evaluate_command)

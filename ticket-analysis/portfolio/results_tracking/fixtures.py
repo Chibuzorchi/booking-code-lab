@@ -29,7 +29,7 @@ are enforced here rather than left to callers:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 
 from .rules.scores import RegulationScore
@@ -82,6 +82,15 @@ class KickoffTime:
         if self.utc is not None:
             if self.utc.tzinfo is None:
                 raise InvalidFixtureError("utc must be a timezone-aware datetime")
+            if self.utc.utcoffset() != timedelta(0):
+                # A field named `utc` must actually be UTC (offset zero), not
+                # merely timezone-aware -- an unnormalized "+02:00" instant
+                # would otherwise make a later date-only comparison read the
+                # wrong calendar date (F9_STEP4_REVIEW.md S4-08). Callers
+                # must normalize to UTC themselves (datetime.astimezone) and
+                # cite the evidence for the original offset.
+                raise InvalidFixtureError(
+                    f"utc must have offset zero (actual UTC), got offset {self.utc.utcoffset()!r}")
             if not self.timezone_evidence:
                 raise InvalidFixtureError(
                     "a utc interpretation requires nonempty timezone_evidence; "
