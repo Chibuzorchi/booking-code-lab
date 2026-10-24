@@ -112,16 +112,36 @@ Real per-division file freshness cannot be verified without triggering the same
 restriction this gate exists to respect, so it stays unverified and disabled
 pending a manually-provided file.
 
-## API-Football — blocked, no credentials configured
+## API-Football — credentials configured, verified against the live API
 
-No API key exists in this workspace (`grep -ri api.football` over `.env`/config
-turns up nothing, and no account exists to check). Its documented free tier
-(100 requests/day, season restrictions) and the distinction between fixture/
-event/statistics capabilities and settlement rules were already recorded in
-`F9_PLAN_QA.md`. This review adds no new verified fact for this source: actual
-league/season/field coverage cannot be hand-checked until a real account and key
-are configured, which requires the user's decision (cost, signup, credential
-storage), not something this spike can resolve offline.
+**Update (24 October 2026, after this spike's original write-up):** the user
+signed up directly with api-sports.io (not RapidAPI, not the unrelated
+apifootball.com), added a free-tier key as `API_FOOTBALL_KEY` in the
+repo-parent `Sport/.env` (never committed, never logged), and one real,
+quota-conscious call was made with `ApiFootballClient.get_fixtures_by_date()`
+to confirm it actually works:
+
+- `get_fixtures_by_date("2026-10-24")` with no `league`/`season` filter
+  returned 1,666 real fixtures across all competitions for that date,
+  including finished matches with real scores (`status.short == "FT"`,
+  e.g. Chicago Red Stars W 0-1 Houston Dash W).
+- The free tier does **not** allow combining a specific `league` filter with
+  `season=2026` (its season coverage for that combination is restricted to
+  2022-2024); passing `league`/`season` together with the current season
+  fails. The workaround already matches the client's existing contract:
+  query by date only, with no league/season params, and filter down to the
+  8 in-scope leagues in our own code after the fetch -- never via the API's
+  query params. No code change was needed in `sources/api_football.py` for
+  this; `extract_regulation_score()`'s existing FT-only acceptance already
+  parsed this real response correctly.
+- One request consumed, out of the 100/day free-tier quota.
+
+Its documented free tier (100 requests/day) and the distinction between
+fixture/event/statistics capabilities and settlement rules were already
+recorded in `F9_PLAN_QA.md`. This source is now unblocked for step 5's
+adapter work, subject to the date-only query workaround above and the
+100 requests/day budget that step 5's "budgets/cache" requirement must
+actually enforce.
 
 ## Methodology note: do not trust an AI-summarized fetch as evidence
 
@@ -145,7 +165,10 @@ parse raw bytes with a versioned parser, full stop.
 - Football-Data: one page fetch of public documentation (`data.php`), no CSV/data
   download; one `notes.txt` request redirected (302) and not followed further,
   to avoid any appearance of automated data retrieval beyond documentation review.
-- API-Football: zero requests; no account exists.
+- API-Football: zero requests at the time this spike was originally written
+  (no account existed then). One real request was made afterward, once the
+  user configured a key, as recorded in the update above -- see that section
+  for the count against the 100/day free-tier budget.
 
 ## Revised source-strategy recommendation
 
@@ -162,9 +185,14 @@ configured today:
    there is no automated variant to enable under its current terms. Build the
    user-supplied-CSV-with-provenance path before counting on this source at all.
 3. API-Football is the only source with a plausible path to lower leagues, cups
-   and continental qualifiers, but is entirely unverified pending the user
-   configuring a real account/key; its free-tier quota (100/day) will not cover
-   102+62 tickets' worth of fixtures in one pass regardless.
+   and continental qualifiers. It is now credential-verified against the live
+   API (see the update above): a date-only query (no league/season filter)
+   returns real fixtures with real scores. Its free-tier quota (100/day) still
+   will not cover 102+62 tickets' worth of fixtures in one pass, and the
+   league+season=2026 filter restriction still applies -- step 5's budget/cache
+   work must batch by date, filter leagues in our own code, and spread requests
+   across days or fall back cleanly when the daily quota is exhausted, not
+   assume one unbounded pass.
 4. At least 6 of the 26 sampled competitions (AFC Challenge League, CAF
    Champions League Qualification, NCAA, NWSL, Primera Division Women,
    A-League Women) have no confirmed path to a result source in this review at
