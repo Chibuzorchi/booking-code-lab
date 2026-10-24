@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from portfolio.results_tracking import __main__ as results_cli
 from portfolio.results_tracking.jobs import JobState, JobStore
 from portfolio.results_tracking.results_api import (
     ReportNotFoundError, ResultsApiConfig, ResultsApiError, _build_audit_rows,
@@ -316,6 +317,38 @@ class SubmitEvaluationTests(unittest.TestCase):
             for ticket in not_supplied:
                 self.assertEqual(ticket["status"], "unresolved")
                 self.assertIsNone(ticket["ticket_id"])
+
+    def test_a_published_revision_replays_through_the_cli_with_row_id_intact(self):
+        # S5-05 repro: an HTTP-produced revision directory must itself be a
+        # valid `evaluate --replay` target, with row_id preserved -- not the
+        # null row_id the review observed when only evidence.json/report.json
+        # were archived (no audit_population.json for --replay to recover
+        # the audited population from).
+        with TemporaryDirectory() as tmp:
+            valid = _ticket("C1", "Arsenal - Chelsea", "England - Premier League", "1X2", "1",
+                             "2026-10-23T15:00:00")
+            registry = FakeRegistry(_extract([valid]))
+            config = ResultsApiConfig(root=Path(tmp) / "results_api")
+            job_store = JobStore(Path(tmp) / "jobs")
+            client = FakeApiFootballClient({
+                "2026-10-23": [_raw_fixture(1, 39, "Premier League", "Arsenal", "Chelsea", "FT",
+                                             "2026-10-23T15:00:00+00:00", fulltime={"home": 2, "away": 1})],
+            })
+
+            record = submit_evaluation(registry, config, job_store, "run-1",
+                                        client_factory=lambda: client)
+            final = _wait_for_terminal(job_store, record.job_id)
+            self.assertEqual(final.state, JobState.SUCCEEDED)
+            report = get_latest_report(config, "run-1")
+            rev_dir = config.revisions_root("run-1") / report["revision_id"]
+            self.assertTrue((rev_dir / "audit_population.json").exists())
+
+            replay_out = Path(tmp) / "replayed"
+            exit_code = results_cli.main(["evaluate", "--replay", str(rev_dir), "--output", str(replay_out)])
+            self.assertEqual(exit_code, 0)
+            replayed_report = json.loads((replay_out / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(replayed_report["tickets"]), 1)
+            self.assertIsNotNone(replayed_report["tickets"][0]["row_id"])
 
 
 class CancelJobTests(unittest.TestCase):

@@ -294,11 +294,20 @@ def _fixtures_for_date(cache: FixtureCache, date: str) -> list:
 
 
 def publish_revision(config: ResultsApiConfig, run_id: str, evidence: dict, report: dict, *,
-                      input_digest: str, config_digest: str) -> str:
+                      input_digest: str, config_digest: str, audit_rows: dict | None = None) -> str:
     """Writes a new revision directory, verifies its own hashes, then
     publishes manifest.json and the latest.json pointer atomically. Never
     touches a prior revision -- a failed publish leaves the last good report
-    (if any) exactly as it was."""
+    (if any) exactly as it was.
+
+    When given, audit_rows is archived as audit_population.json alongside
+    evidence.json/manifest.json, in exactly the layout __main__.py's
+    --replay already expects from a prior `evaluate` command's output
+    directory (F9_STEP4_REREVIEW.md S4R-04) -- so an HTTP-published revision
+    directory is itself a valid --replay target, with row_id/decisions
+    preserved after the run and its cache entries are gone (F9_STEP5_REVIEW.md
+    S5-05), rather than replaying as an unanchored evidence-only evaluation
+    whose row_ids come back null."""
     if not isinstance(run_id, str) or not _SAFE_ID_RE.fullmatch(run_id):
         raise ResultsApiError(f"invalid run id: {run_id!r}")
     revision_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f") + "-" + uuid.uuid4().hex[:8]
@@ -308,13 +317,19 @@ def publish_revision(config: ResultsApiConfig, run_id: str, evidence: dict, repo
     report_bytes = json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8")
     (rev_dir / "evidence.json").write_bytes(evidence_bytes)
     (rev_dir / "report.json").write_bytes(report_bytes)
+    manifest_files = {"evidence.json": hashlib.sha256(evidence_bytes).hexdigest(),
+                       "report.json": hashlib.sha256(report_bytes).hexdigest()}
+    if audit_rows is not None:
+        audit_population_bytes = json.dumps(audit_rows, indent=2, sort_keys=True,
+                                             ensure_ascii=False).encode("utf-8")
+        (rev_dir / "audit_population.json").write_bytes(audit_population_bytes)
+        manifest_files["audit_population.json"] = hashlib.sha256(audit_population_bytes).hexdigest()
     manifest = {
         "revision_id": revision_id, "run_id": run_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "input_digest": input_digest, "config_digest": config_digest,
         "row_count": report["counts"]["total"],
-        "files": {"evidence.json": hashlib.sha256(evidence_bytes).hexdigest(),
-                   "report.json": hashlib.sha256(report_bytes).hexdigest()},
+        "files": manifest_files,
     }
     for rel_path, expected in manifest["files"].items():
         actual = hashlib.sha256((rev_dir / rel_path).read_bytes()).hexdigest()
@@ -480,15 +495,16 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
             "tickets": [_ticket_to_evidence(row_id, ticket, provider) for row_id, ticket in rows.items()
                         if isinstance(ticket, dict)],
         }
+        audit_rows = _build_audit_rows(provider, rows)
         try:
-            report = evaluate_run(evidence, audit_rows=_build_audit_rows(provider, rows))
+            report = evaluate_run(evidence, audit_rows=audit_rows)
         except EvaluationInputError as exc:
             job_store.update(outer_job_id, lambda r: r.update(
                 state=JobState.FAILED, error={"code": "evaluation_failed", "message": str(exc)}))
             return
 
         try:
-            revision_id = publish_revision(config, run_id, evidence, report,
+            revision_id = publish_revision(config, run_id, evidence, report, audit_rows=audit_rows,
                                             input_digest=input_digest, config_digest=config_digest)
         except (OSError, ResultsApiError) as exc:
             job_store.update(outer_job_id, lambda r: r.update(
