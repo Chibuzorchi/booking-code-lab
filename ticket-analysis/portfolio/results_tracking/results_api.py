@@ -540,6 +540,25 @@ def submit_evaluation(registry, config: ResultsApiConfig, job_store: JobStore, r
     return job_store.get(outer.job_id)
 
 
+def _commit_publication(job_store: JobStore, outer_job_id: str, result: dict) -> None:
+    """The publication commit point (F9_STEP5_REVIEW.md S5-04):
+    publish_revision() has already written this revision and latest.json
+    by the time this runs, so the data is real and discoverable regardless
+    of what happens next. What was racy before was only the job *record*:
+    a cancel_requested set between the last pre-evaluation check and an
+    unconditional SUCCEEDED write was silently ignored, leaving a job that
+    read SUCCEEDED with cancel_requested=true and no explanation. Reading
+    cancel_requested and writing the terminal state in the same
+    job_store.update call closes that race -- a cancellation landing here
+    is reflected as CANCELLED, never silently coexisting with SUCCEEDED."""
+    def _commit(r):
+        if r.get("cancel_requested"):
+            r.update(state=JobState.CANCELLED, result=result)
+        else:
+            r.update(state=JobState.SUCCEEDED, result=result)
+    job_store.update(outer_job_id, _commit)
+
+
 def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job_id: str, run_id: str,
                          provider, input_digest: str, config_digest: str, rows: dict,
                          allow_partial: bool, client_factory: Callable[[], object]) -> None:
@@ -627,10 +646,9 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
                 state=JobState.FAILED, error={"code": "publish_failed", "message": str(exc)}))
             return
 
-        job_store.update(outer_job_id, lambda r: r.update(
-            state=JobState.SUCCEEDED,
-            result={"revision_id": revision_id, "counts": report["counts"],
-                    "incomplete_dates": list(incomplete)}))
+        result = {"revision_id": revision_id, "counts": report["counts"],
+                  "incomplete_dates": list(incomplete)}
+        _commit_publication(job_store, outer_job_id, result)
     except Exception as exc:  # the background thread must never die silently
         job_store.update(outer_job_id, lambda r: r.update(
             state=JobState.FAILED, error={"code": "internal_error", "message": str(exc)}))

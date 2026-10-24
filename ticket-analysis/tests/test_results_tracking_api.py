@@ -10,6 +10,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 from tempfile import TemporaryDirectory
 
 from portfolio.results_tracking import __main__ as results_cli
@@ -17,7 +18,7 @@ from portfolio.results_tracking.jobs import JobState, JobStore
 from portfolio.results_tracking.results_api import (
     _ABANDONED_JOB_AFTER_SECONDS,
     ReportNotFoundError, ResultsApiConfig, ResultsApiError, _build_audit_rows,
-    _dates_needed, _fixture_to_evidence_dict, _ticket_to_evidence, cancel_job,
+    _commit_publication, _dates_needed, _fixture_to_evidence_dict, _ticket_to_evidence, cancel_job,
     compute_config_digest, get_latest_report, list_codes, load_identity_evidence,
     load_population, publish_revision, submit_evaluation,
 )
@@ -391,6 +392,44 @@ class SubmitEvaluationTests(unittest.TestCase):
             self.assertEqual(orphaned.state, JobState.FAILED)
             self.assertEqual(orphaned.error["code"], "orphaned_worker")
 
+    def test_a_late_cancellation_lands_as_cancelled_not_succeeded(self):
+        # S5-04 repro: cancellation requested after fetch finishes but
+        # before the job's terminal state is committed must not be
+        # silently ignored by an unconditional SUCCEEDED write.
+        with TemporaryDirectory() as tmp:
+            registry = FakeRegistry(_extract([
+                _ticket("C1", "Arsenal - Chelsea", "England - Premier League", "1X2", "1",
+                        "2026-10-23T15:00:00"),
+            ]))
+            config = ResultsApiConfig(root=Path(tmp) / "results_api")
+            job_store = JobStore(Path(tmp) / "jobs")
+            client = FakeApiFootballClient({
+                "2026-10-23": [_raw_fixture(1, 39, "Premier League", "Arsenal", "Chelsea", "FT",
+                                             "2026-10-23T15:00:00+00:00", fulltime={"home": 2, "away": 1})],
+            }, delay=0.1)
+
+            record = submit_evaluation(registry, config, job_store, "run-1", client_factory=lambda: client)
+
+            from portfolio.results_tracking.__main__ import evaluate_run as real_evaluate_run
+
+            def _evaluate_then_cancel(evidence, audit_rows=None):
+                # Lands the cancellation request exactly inside the S5-04
+                # race window: after fetch has completed, before this
+                # job's terminal state is written.
+                cancel_job(job_store, record.job_id)
+                return real_evaluate_run(evidence, audit_rows=audit_rows)
+
+            with mock.patch("portfolio.results_tracking.results_api.evaluate_run",
+                             side_effect=_evaluate_then_cancel):
+                final = _wait_for_terminal(job_store, record.job_id)
+
+            self.assertEqual(final.state, JobState.CANCELLED)
+            # The revision was still published -- discoverable evidence is
+            # never thrown away just because a cancellation arrived too
+            # late to stop it (jobs.py's own cancellation contract).
+            report = get_latest_report(config, "run-1")
+            self.assertEqual(final.result["revision_id"], report["revision_id"])
+
     def test_no_dates_needed_still_publishes_a_report_for_every_row(self):
         with TemporaryDirectory() as tmp:
             registry = FakeRegistry(_extract([
@@ -517,6 +556,31 @@ class SubmitEvaluationTests(unittest.TestCase):
             replayed_report = json.loads((replay_out / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(len(replayed_report["tickets"]), 1)
             self.assertIsNotNone(replayed_report["tickets"][0]["row_id"])
+
+
+class CommitPublicationTests(unittest.TestCase):
+    def test_commits_succeeded_when_no_cancellation_was_requested(self):
+        with TemporaryDirectory() as tmp:
+            job_store = JobStore(Path(tmp))
+            outer = job_store.create_or_reuse("run-1", "input-a", "config-a")
+            _commit_publication(job_store, outer.job_id, {"revision_id": "r1"})
+            record = job_store.get(outer.job_id)
+            self.assertEqual(record.state, JobState.SUCCEEDED)
+            self.assertEqual(record.result, {"revision_id": "r1"})
+
+    def test_commits_cancelled_when_cancellation_was_requested(self):
+        # S5-04: the decision reads cancel_requested in the very same
+        # update() call that writes the terminal state -- no separate,
+        # earlier read that a late request could race past.
+        with TemporaryDirectory() as tmp:
+            job_store = JobStore(Path(tmp))
+            outer = job_store.create_or_reuse("run-1", "input-a", "config-a")
+            job_store.request_cancel(outer.job_id)
+            _commit_publication(job_store, outer.job_id, {"revision_id": "r1"})
+            record = job_store.get(outer.job_id)
+            self.assertEqual(record.state, JobState.CANCELLED)
+            # The published revision is still recorded, not discarded.
+            self.assertEqual(record.result, {"revision_id": "r1"})
 
 
 class CancelJobTests(unittest.TestCase):
