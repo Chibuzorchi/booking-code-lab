@@ -44,7 +44,8 @@ Backend mapping, field by field:
     how many codes      -> MAX_QUALIFYING output cap   (blank/0 = uncapped, bounded by try_budget)
     (fixed)             -> --depth 3   progressive mutate 1->2->3, always on
     (advanced/optional) -> try_budget  = MAX_CODES_TO_TRY (how hard to search; governs uncapped runs)
-    seed                -> reuse last seed, or "book fresh" -> book_random.py first
+    seed                -> typed booking code, or "book fresh" -> book_and_scan.py
+                           books one coupon first and scans that code (F8)
 
 ## 3. Stage detail
 
@@ -53,8 +54,14 @@ Backend mapping, field by field:
 - "Run" -> POST /api/scan -> run_id. UI polls GET /api/scan/<run_id> every ~3s and shows
   a live counter: tried / valid / qualifying, like the CLI's "Scan done" line.
 - On finish: shows the qualifying count (e.g. 468) and unlocks Stage 2.
-- Fresh seed path: if the user picks "book fresh", the job first runs book_random.py
-  (browser, slower, can fail behind Akamai) then scans that seed.
+- Fresh seed path (F8, implemented): ticking "Book a fresh code" disables the seed
+  field and posts fresh_seed instead. The worker opens the provider in a browser,
+  books ONE coupon through scripts/booking.py (slower, can fail behind Akamai),
+  records it in the run's seed.json, and then scans that code in the same process --
+  one run id, one provider lock. The page shows "booking a fresh code in the browser"
+  until the code appears, then the code itself. A booking failure ends the run failed
+  with booking_failed and the provider's reason. Booking reserves a code; it never
+  stakes money.
 
 ### Stage 2 — Distinct (phase 1, leg-level)
 - One button: "Find distinct codes".
@@ -67,6 +74,13 @@ Backend mapping, field by field:
   copy JS currently lives twice (reporting.html and distinct_page.py); the build should
   extract a single shared helper rather than a third copy.
 - A **Copy all** / **Download** action for the whole distinct list.
+- Order + band controls over that list (F9, implemented): lowest/highest odds first and
+  an optional from/to odds range. These are a VIEW over the report already fetched --
+  no request is made and no band reaches the API. Distinctness is a property of the
+  whole eligible pool (a code is distinct only relative to the codes it could have
+  overlapped), so narrowing the pool before the analysis would change what "distinct"
+  means; narrowing the list afterwards does not. Copy takes exactly what is shown.
+  Stage 3 and the stage-2 subset check keep reading the full report.
 - This is the deliverable the user wanted first.
 
 ### Stage 3 — De-correlate (phase 2/3, later)

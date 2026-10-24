@@ -307,13 +307,13 @@ REMAINING: F6 wires harvest_odds_band into the API using runner-owned extract+po
 
 ---
 
-## F5. Run registry + job runner [PARTIAL 2026-09-28 v3 — review fixes completed; fresh-seed orchestration and live acceptance outstanding]
+## F5. Run registry + job runner [DONE 2026-09-29 — fresh-seed orchestration landed in F8; live acceptance outstanding]
 WHAT   Durable lifecycle and exact artifact lookup for F6/F7, implemented in
        portfolio/registry.py over portfolio/worker.py. No HTTP/UI implementation.
 LAYOUT results/runs/<provider>/<run_id>/ contains status.json, status.lock,
        run.lock, diagnostic launch.pending, worker.exit.json, progress.json,
-       worker.log, codes/, extracts/.
-SCHEMA v1: run_id, provider, schema_version, state, request{seed, max_qualifying,
+       worker.log, codes/, extracts/, and seed.json on a fresh-seed run.
+SCHEMA v1: run_id, provider, schema_version, state, seed, request{seed, fresh_seed, max_qualifying,
        min_odds, max_odds, max_codes, depth}, started_at, finished_at, updated_at,
        stop_reason, counters{tried, found_ok, qualifying, excluded_simulations,
        unpriced}, error{code,message}, cancel_requested_at, cancel_granted_at,
@@ -392,8 +392,10 @@ STATUS Added all five routes plus POST /api/scan/<id>/cancel. Loopback binding,
        Stage 2/3 parse the exact verified snapshot once and use harvest_odds_band;
        Stage 3 validates parameters before registry access and keeps the full pool.
        Existing report remains available. See F6_API.md for the HTTP contract.
-       Explicit seed required; fresh_seed=true returns 501. Booking orchestration,
-       live provider acceptance, and F7 browser work remain outstanding.
+       Either an explicit seed or fresh_seed=true (never both); fresh_seed=true
+       now books (F8) and returns 501 only for a provider tree with no booking
+       entrypoint. Live provider acceptance and the F7 browser gates remain
+       outstanding.
 
 ## F7. Shared copy() helper + 3-stage page  [DONE 2026-09-29 — browser acceptance still open]
 WHAT   Copy JS is duplicated (reporting.html, distinct_page.py) and distinct_page's
@@ -454,9 +456,148 @@ STATUS Helper: portfolio/copy.js, inlined (never linked) into every page through
 
 ---
 
+## F8. Fresh-seed runs: book a code, then scan it  [DONE 2026-09-29 — live acceptance open]
+WHAT   The console required a seed typed by hand. Each provider already had a
+       book_random.py, but nothing wired it to a run: POST /api/scan answered
+       fresh_seed with 501 and the seed field was required.
+CHANGE One worker books and scans. <provider>/scripts/book_and_scan.py takes the
+       scan_code flag set minus the positional code, books one coupon through the
+       provider's own browser flow, records the outcome in the run's seed.json, and
+       then calls that provider's scan_code.main() IN THE SAME PROCESS with the
+       booked code. One process means one provider lock, one run id and one
+       cancellation path: the existing single-flight and recovery model is untouched
+       and the scan phase is byte-for-byte the ordinary one.
+SHARED <provider>/scripts/booking.py holds the single-code browser flow, so a code
+       booked by the console and one booked by book_random.py come from one path.
+       bet9ja/scripts/book_random.py now calls it. Providers still cannot import each
+       other, so booking.py and book_and_scan.py are twins per provider by design;
+       worker.py only builds argv. Playwright and the page objects are imported
+       INSIDE book_one(), never at module import time, so a workspace without the
+       browser stack reports a booking error instead of killing the worker with an
+       ImportError before it can say why.
+SEED   A fresh-seed run starts with no seed at all. The worker writes seed.json
+       {schema_version, provider, run_id, seed, booked_at, error?}; reads merge it
+       into the status view, so the booked code is visible mid-run without ever
+       racing the finalizer for status.json. A record whose run_id or provider does
+       not match the directory it sits in, or whose seed is not a booking code, reads
+       as "no seed yet" rather than becoming something the page displays. Null seed +
+       active state means "still booking"; null on a finished run means it never got
+       one. Booking failure is a reason, not a bare exit code: error.code is
+       booking_failed and the message carries what the provider said.
+UI     Stage 1 gained "Book a fresh code". The box and the seed field are one
+       control: ticking it disables the input (which also takes it out of form
+       validation) and the request carries fresh_seed with no seed. The Seed counter
+       row reads booking… -> the code -> never booked, and the state line says
+       "booking a fresh code in the browser" while it is live. The notice says
+       booking opens a real browser, takes a while, and never stakes money.
+DONE   A run started with no seed books one and scans it under one run id; the booked
+       code is visible while the scan is still going; a booking failure says why.
+STATUS 215 tests pass (up from 199): fresh-seed argv and BookingUnavailableError in
+       test_worker; an offline booking fixture in test_registry driving success,
+       failure, a crash with no record, mid-run visibility, exclusivity and foreign
+       or truncated seed.json; end-to-end 202 -> succeeded -> seed over real HTTP and
+       a 501 for a provider with no entrypoint in test_serve; and a console_probe
+       scenario that ticks the box, submits, and reads the page through booking,
+       booked and failed. Both real providers' book_and_scan --help is executed
+       offline, which also proves the deferred Playwright import.
+       OPEN: no test books a real coupon. Live acceptance (each provider actually
+       booking in a browser and scanning that code) is yours to run, and belongs to
+       gate 1 below.
+
+---
+
+## F9. Order + band over the stage-2 list  [DONE 2026-09-29]
+WHAT   A run harvested with a blank Min/Max odds gives a wide pool: one real run
+       returned 94 distinct codes with no way to see the high-odds end or a range,
+       and re-running with a band costs another full scan (~17m on bet9ja).
+CHANGE Stage 2 gained Order (lowest/highest odds first), From odds, To odds and
+       "Show all", over the report ALREADY fetched. No request is made when they
+       change, and no band is ever sent to the API.
+WHY A VIEW, NOT A PARAMETER
+       Distinctness is a property of the whole eligible pool: a code counts as
+       distinct only relative to the codes it could have overlapped. Filter the pool
+       first and a code can look distinct purely because its overlapping partner fell
+       outside the band -- the number would still say "distinct" and mean something
+       else. So the band decides what is LISTED and COPIED, nothing more. That also
+       keeps the API's existing refusal of client-supplied band overrides intact: the
+       analysis stays pinned to the hash-verified snapshot and its recorded policy.
+HONEST Unpriced codes cannot satisfy a band, so a band drops them and the count line
+       says how many. "From" above "To" is reported, not silently ignored. Copy takes
+       exactly the shown list ("Copy shown codes"), and is disabled when nothing is
+       shown. Stage 3's notice on the page says it ignores these controls.
+STATE  The order/band live in the provider's own view, so switching providers and
+       coming back shows the same list; a new analysis starts unfiltered.
+DONE   94 codes can be read highest-first or narrowed to a range without re-scanning,
+       and what you copy is what you see.
+STATUS 219 tests pass (up from 215). A console_probe scenario drives the real script:
+       default order, reversed order with unpriced last either way, a band that keeps
+       one code, a band nothing reaches (copy disabled), an inverted band, reset, the
+       copy payload matching the shown list in every case, the band surviving a
+       provider switch but not a new run, and -- the one that matters -- stage 3 run
+       while stage 2 showed 2 of 4, still checking all 4 and sending no band.
+       OPEN: browser spot-check only; the probe stubs the DOM, so it proves the
+       behaviour, not the layout of the new controls at phone width.
+
+---
+
+## F10. All codes listed when the harvest succeeds  [DONE 2026-10-09]
+WHAT   After a scan the console showed only counters. To see the codes and their
+       games you had to run stage 2, which shows the distinct ones only -- the
+       overlapping codes were never listed anywhere on the page.
+CHANGE POST /api/codes {run_id} returns the run's whole eligible pool (`codes`, plus
+       the same pool metadata and exclusions stage 2 reports), with no analysis. The
+       console asks for it once, on the status reply that first shows the run
+       succeeded, and lists it under stage 1 with the stage-2 cards: code, legs,
+       odds, Copy, expandable games.
+SAME POOL
+       The route reads the hash-verified snapshot through build_pool with the run's
+       recorded harvest policy, exactly as /api/distinct and /api/decorrelate do, so
+       the count here is stage 2's pool size. It accepts a run id and nothing else.
+VIEW   Its own Order / From odds / To odds / "Show all", kept apart from stage 2's:
+       banding one list never bands the other. "Copy shown codes" takes what is
+       listed. An empty pool is stated; a refused request is reported in place.
+STATE  The list and its controls live in the provider's view: a provider switch and
+       return repaints without asking again, a different run drops it at once.
+NOT    Live during the scan. The extract is committed when the run finishes, so the
+       list appears then; a failed or cancelled run is never asked about.
+DONE   Every code from a run is readable and copyable before stage 2 is touched.
+STATUS 223 tests pass (up from 219). One API test (pool equals stage 2's, overlaps
+       included, body shape, method) and a console_probe scenario: no request while
+       running, one on success, order, band, independence from stage 2's band,
+       provider switch and return, run change, empty pool, failed run, refusal.
+       OPEN: browser spot-check of the layout, as for F9.
+
+---
+
+## F11. Codes are saved as they are found  [DONE 2026-10-09]
+WHAT   The extract was written once, after the scan loop. A run that was cancelled
+       or failed at code 24,000 kept its counters and none of its codes.
+CHANGE The scanner (both providers) rewrites <run>/checkpoint.json whenever a new
+       coupon qualifies -- atomically, at most once a second, and once more on the
+       way out of the loop however it ended. It has the extract's shape plus
+       `partial: true`. /api/codes serves it for any run that has not succeeded, and
+       the console lists it: "saved so far" while running, "stopped early" after.
+NOT AN EXTRACT
+       It sits outside extracts/, so "exactly one extract per run" and "success is
+       never inferred from an extract's presence" are untouched. Stages 2 and 3
+       still refuse a run that did not succeed; the checkpoint feeds listing only.
+LIMITS A worker killed outright loses what it found in the last second. Runs made
+       before this change have no checkpoint; their raw/ responses still exist.
+       The console re-asks only when the qualifying count or the state moves, and a
+       refresh redraws the list, so an expanded card closes when a new code lands.
+STATUS 225 tests pass (up from 223): the scanner test fails a scan part-way and
+       reads its hits back; the API test covers running/failed/cancelled, nothing
+       saved (409), wrong provider and a truncated file. Live: a sportybet scan
+       cancelled at 18 qualifying listed its checkpointed codes afterwards, with
+       /api/distinct still 409.
+
+---
+
 ## Acceptance gate for the whole slice
 1. bet9ja + sportybet each: scan (band, uncapped+budget) -> distinct -> decorrelate,
-   all from the browser, each provider in its own process.
+   all from the browser, each provider in its own process. Run it once from a typed
+   seed and once with "Book a fresh code", so the F8 booking phase is exercised
+   against the real provider (no offline test books a real coupon).
 2. With no target limit, Stage 2 fully-distinct codes are a subset of Stage 3
    cap-1 selected codes on the same eligible pool (F2b); counts need not be equal.
 3. max_exposure=0 is impossible to send; the pool fed to Stage 3 is the full run pool.

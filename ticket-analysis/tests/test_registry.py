@@ -25,8 +25,14 @@ from portfolio.registry import (
     STATE_LAUNCH_FAILED,
     STATE_SUCCEEDED,
     STATE_UNKNOWN,
+    NONTERMINAL_STATES,
 )
-from portfolio.worker import SUPERVISOR_PAUSE_ENV, JobBusyError, WorkerHost
+from portfolio.worker import (
+    SUPERVISOR_PAUSE_ENV,
+    BookingUnavailableError,
+    JobBusyError,
+    WorkerHost,
+)
 
 TICKET_ANALYSIS = Path(__file__).resolve().parents[1]
 
@@ -146,6 +152,82 @@ if __name__ == "__main__":
     raise SystemExit(main())
 '''
 
+REGISTRY_FIXTURE_BOOK_SCAN = r'''
+"""Offline fixture mirroring <provider>/scripts/book_and_scan.py.
+
+Books a fake code, records it in seed.json exactly as the real entrypoint
+does, then hands the same process over to the scan fixture. No browser.
+"""
+import argparse, json, os, sys, time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env", override=False)
+except Exception:
+    pass
+
+EXIT_BOOKING_FAILED = 2
+
+FLAGS = ("--min-odds", "--max-odds-cap", "--max-codes", "--depth",
+         "--max-qualifying", "--run-dir", "--env", "--min-legs", "--max-legs",
+         "--top")
+
+
+def write_seed_record(run_dir, provider, seed, error=None):
+    record = {"schema_version": 1, "provider": provider, "run_id": run_dir.name,
+              "seed": seed,
+              "booked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    if error is not None:
+        record["error"] = str(error)[:500]
+    run_dir.mkdir(parents=True, exist_ok=True)
+    tmp = run_dir / ".seed.json.tmp"
+    tmp.write_text(json.dumps(record, indent=2))
+    os.replace(tmp, run_dir / "seed.json")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--scan", action="store_true")
+    for flag in FLAGS:
+        ap.add_argument(flag)
+    args, _ = ap.parse_known_args()
+
+    run_dir = Path(args.run_dir) if args.run_dir else ROOT / "results"
+    provider = os.getenv("PROVIDER", "")
+    time.sleep(float(os.getenv("FIXTURE_BOOK_SECONDS", "0")))
+
+    failure = os.getenv("FIXTURE_BOOKING_ERROR", "")
+    if failure:
+        write_seed_record(run_dir, provider, None, failure)
+        print(f"booking failed: {failure}", file=sys.stderr)
+        return EXIT_BOOKING_FAILED
+    if os.getenv("FIXTURE_BOOKING_CRASH") == "1":
+        print("booking crashed before recording anything", file=sys.stderr)
+        return EXIT_BOOKING_FAILED
+
+    seed = os.getenv("FIXTURE_BOOKED_SEED", "BOOKED1")
+    write_seed_record(run_dir, provider, seed)
+    print(f"BOOKING CODE: {seed}")
+
+    forwarded = [sys.argv[0], seed]
+    if args.scan:
+        forwarded.append("--scan")
+    for flag in FLAGS:
+        value = getattr(args, flag.lstrip("-").replace("-", "_"))
+        if value is not None:
+            forwarded += [flag, str(value)]
+    from scripts.scan_code import main as scan_main
+    sys.argv = forwarded
+    return scan_main()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
 BET9JA_ENV = "PROVIDER=bet9ja\nMIN_TOTAL_ODDS=5000\n"
 SPORTYBET_ENV = "PROVIDER=sportybet\nMIN_TOTAL_ODDS=5000\n"
 
@@ -160,6 +242,7 @@ class RegistryTestBase(unittest.TestCase):
             scripts = self.workspace / provider / "scripts"
             scripts.mkdir(parents=True)
             (scripts / "scan_code.py").write_text(REGISTRY_FIXTURE_SCAN)
+            (scripts / "book_and_scan.py").write_text(REGISTRY_FIXTURE_BOOK_SCAN)
             (self.workspace / provider / ".env").write_text(dotenv)
         self._env_backup = dict(os.environ)
         self.addCleanup(lambda: (os.environ.clear(), os.environ.update(self._env_backup)))
@@ -471,6 +554,111 @@ class RegistryRecoveryTests(RegistryTestBase):
         final = fresh.get(run["run_id"])
         self.assertEqual(final["state"], STATE_CANCELLED)
         self.assertEqual(final["stop_reason"], "cancelled")
+
+
+class RegistryFreshSeedTests(RegistryTestBase):
+    """A run that books its own code before scanning (F8)."""
+
+    def run_dir(self, run_id):
+        return self.workspace / "results" / "runs" / run_id.split("-")[1] / run_id
+
+    def test_fresh_seed_run_books_then_scans_under_one_run_id(self):
+        registry = self.registry()
+        os.environ["FIXTURE_BOOKED_SEED"] = "BK9JA01"
+        run = registry.start_scan("bet9ja", fresh_seed=True)
+        self.assertIsNone(run["request"]["seed"])
+        self.assertIs(run["request"]["fresh_seed"], True)
+        final = self.wait_state(registry, run["run_id"], {STATE_SUCCEEDED})
+        self.assertEqual(final["seed"], "BK9JA01")
+        self.assertEqual(final["counters"]["qualifying"], 1)
+        self.assertTrue(final["extract"]["path"].endswith("scan_fixture.json"))
+        # The booked code survives a fresh reader: it lives in the run dir.
+        self.assertEqual(self.registry().get(run["run_id"])["seed"], "BK9JA01")
+        self.assertEqual(registry.list_runs(provider="bet9ja")[0]["seed"], "BK9JA01")
+
+    def test_seed_is_null_while_booking_then_visible_while_scanning(self):
+        registry = self.registry()
+        os.environ["FIXTURE_BOOK_SECONDS"] = "0.8"
+        os.environ["FIXTURE_SLEEP_SECONDS"] = "1.2"
+        run = registry.start_scan("sportybet", fresh_seed=True)
+        self.assertIsNone(run["seed"])  # "still booking"
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            view = registry.get(run["run_id"])
+            if view["seed"]:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("the booked seed never became visible")
+        self.assertEqual(view["seed"], "BOOKED1")
+        self.assertIn(view["state"], NONTERMINAL_STATES)  # booked, still scanning
+        self.wait_state(registry, run["run_id"], {STATE_SUCCEEDED})
+
+    def test_typed_seed_run_is_unchanged(self):
+        registry = self.registry()
+        run = registry.start_scan("bet9ja", "SEED")
+        self.assertIs(run["request"]["fresh_seed"], False)
+        self.assertEqual(run["seed"], "SEED")
+        final = self.wait_state(registry, run["run_id"], {STATE_SUCCEEDED})
+        self.assertEqual(final["seed"], "SEED")
+        self.assertFalse((self.run_dir(run["run_id"]) / "seed.json").exists())
+
+    def test_booking_failure_reports_the_reason_not_an_exit_code(self):
+        registry = self.registry()
+        os.environ["FIXTURE_BOOKING_ERROR"] = "the betslip produced no booking code"
+        run = registry.start_scan("bet9ja", fresh_seed=True)
+        final = self.wait_state(registry, run["run_id"], {STATE_FAILED})
+        self.assertEqual(final["error"]["code"], "booking_failed")
+        self.assertIn("the betslip produced no booking code", final["error"]["message"])
+        self.assertIsNone(final["seed"])
+
+    def test_booking_crash_without_a_record_stays_a_worker_exit(self):
+        registry = self.registry()
+        os.environ["FIXTURE_BOOKING_CRASH"] = "1"
+        run = registry.start_scan("sportybet", fresh_seed=True)
+        final = self.wait_state(registry, run["run_id"], {STATE_FAILED})
+        self.assertEqual(final["error"]["code"], "worker_exit")
+        self.assertIsNone(final["seed"])
+
+    def test_seed_and_fresh_seed_are_mutually_exclusive(self):
+        registry = self.registry()
+        with self.assertRaises(ValueError):
+            registry.start_scan("bet9ja", "SEED", fresh_seed=True)
+        for bad in ("yes", 1, None):
+            with self.assertRaises(ValueError, msg=bad):
+                registry.start_scan("bet9ja", fresh_seed=bad)
+        with self.assertRaises(ValueError):
+            registry.start_scan("bet9ja")  # neither a seed nor fresh_seed
+        self.assertEqual(registry.list_runs(), [])
+
+    def test_provider_without_a_booking_entrypoint_is_refused_cleanly(self):
+        (self.workspace / "bet9ja" / "scripts" / "book_and_scan.py").unlink()
+        registry = self.registry()
+        with self.assertRaises(BookingUnavailableError):
+            registry.start_scan("bet9ja", fresh_seed=True)
+        self.assertEqual(registry.list_runs(), [])  # no run dir left behind
+        # Scanning the same provider with a typed seed still works.
+        run = registry.start_scan("bet9ja", "SEED")
+        self.wait_state(registry, run["run_id"], {STATE_SUCCEEDED})
+
+    def test_foreign_or_malformed_seed_record_reads_as_no_seed(self):
+        registry = self.registry()
+        run = registry.start_scan("bet9ja", fresh_seed=True)
+        run_id = run["run_id"]
+        final = self.wait_state(registry, run_id, {STATE_SUCCEEDED})
+        self.assertEqual(final["seed"], "BOOKED1")
+        path = self.run_dir(run_id) / "seed.json"
+        good = json.loads(path.read_text())
+        for record in ({**good, "run_id": "run-bet9ja-20260928-120000-deadbeef"},
+                       {**good, "provider": "sportybet"},
+                       {**good, "seed": "not a code!"},
+                       {**good, "seed": 12345},
+                       {**good, "seed": ""},
+                       ["not", "an", "object"]):
+            path.write_text(json.dumps(record))
+            self.assertIsNone(registry.get(run_id)["seed"], record)
+        path.write_text('{"seed": "BOOKED1"')  # truncated mid-write
+        self.assertIsNone(registry.get(run_id)["seed"])
 
 
 class RegistryPathSafetyTests(RegistryTestBase):

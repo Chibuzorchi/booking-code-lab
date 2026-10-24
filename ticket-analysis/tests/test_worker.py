@@ -22,6 +22,7 @@ from pathlib import Path
 
 from portfolio.worker import (
     SUPERVISOR_PAUSE_ENV,
+    BookingUnavailableError,
     JobBusyError,
     LaunchError,
     UnknownProviderError,
@@ -650,6 +651,49 @@ class IsolationTests(WorkerTestBase):
             host.start_scan("bet9ja", "   ")
 
 
+class FreshSeedArgvTests(WorkerTestBase):
+    """Fresh-seed runs target the booking entrypoint, not the scanner (F8)."""
+
+    def test_fresh_seed_argv_targets_book_and_scan_without_a_seed(self):
+        run_dir = self.workspace / "run"
+        argv = scan_argv(sys.executable, None, run_dir, max_qualifying=7,
+                         min_odds=5000, depth=3, fresh_seed=True)
+        self.assertEqual(argv[:3], [sys.executable, "-m", "scripts.book_and_scan"])
+        self.assertNotIn("SEED", argv)
+        for flag, value in (("--scan", None), ("--max-qualifying", "7"),
+                            ("--run-dir", str(run_dir)), ("--min-odds", "5000"),
+                            ("--depth", "3")):
+            self.assertIn(flag, argv)
+            if value is not None:
+                self.assertEqual(argv[argv.index(flag) + 1], value)
+        # The scan phase keeps the ordinary flag set, so only the head differs.
+        typed = scan_argv(sys.executable, "SEED", run_dir, max_qualifying=7,
+                          min_odds=5000, depth=3)
+        self.assertEqual(argv[3:], typed[4:])
+        self.assertEqual(typed[:4], [sys.executable, "-m", "scripts.scan_code", "SEED"])
+
+    def test_provider_without_book_and_scan_is_rejected(self):
+        host = self.host()
+        # The fixture workspace has scan_code.py only.
+        host.provider_root("bet9ja")
+        with self.assertRaises(BookingUnavailableError):
+            host.provider_root("bet9ja", fresh_seed=True)
+        with self.assertRaises(BookingUnavailableError):
+            host.start_scan("bet9ja", fresh_seed=True)
+        self.assertFalse(self.lock_held("bet9ja"))
+        # BookingUnavailableError stays an UnknownProviderError for old callers.
+        self.assertTrue(issubclass(BookingUnavailableError, UnknownProviderError))
+
+    def test_seed_and_fresh_seed_cannot_both_be_supplied(self):
+        (self.workspace / "bet9ja" / "scripts" / "book_and_scan.py").write_text("")
+        host = self.host()
+        with self.assertRaises(ValueError):
+            host.start_scan("bet9ja", "SEED", fresh_seed=True)
+        with self.assertRaises(ValueError):
+            host.start_scan("bet9ja", None)
+        self.assertFalse(self.lock_held("bet9ja"))
+
+
 class RealProviderEntrypointTests(unittest.TestCase):
     def setUp(self):
         self._env_backup = dict(os.environ)
@@ -660,19 +704,22 @@ class RealProviderEntrypointTests(unittest.TestCase):
         host = WorkerHost(workspace)
         host.provider_root("bet9ja")
         host.provider_root("sportybet")
+        host.provider_root("bet9ja", fresh_seed=True)
+        host.provider_root("sportybet", fresh_seed=True)
         env = isolated_env(workspace)
         for provider in ("bet9ja", "sportybet"):
             with self.subTest(provider=provider):
-                entrypoint = workspace / provider / "scripts" / "scan_code.py"
-                if not entrypoint.is_file():
-                    self.skipTest(f"real provider tree missing: {entrypoint}")
-                result = subprocess.run(
-                    [sys.executable, "-m", "scripts.scan_code", "--help"],
-                    cwd=workspace / provider, env=env,
-                    capture_output=True, text=True, timeout=60)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("--max-qualifying", result.stdout)
-                self.assertIn("--run-dir", result.stdout)
+                for module in ("scripts.scan_code", "scripts.book_and_scan"):
+                    entrypoint = workspace / provider / (module.replace(".", "/") + ".py")
+                    if not entrypoint.is_file():
+                        self.skipTest(f"real provider tree missing: {entrypoint}")
+                    result = subprocess.run(
+                        [sys.executable, "-m", module, "--help"],
+                        cwd=workspace / provider, env=env,
+                        capture_output=True, text=True, timeout=60)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("--max-qualifying", result.stdout)
+                    self.assertIn("--run-dir", result.stdout)
         self.assertNotIn("engine", sys.modules)
         self.assertNotIn("infra", sys.modules)
 

@@ -141,6 +141,24 @@ class PageScriptTests(unittest.TestCase):
         self.assertIn('Max exposure must be a whole number of at least 1', html)
         self.assertIn("if (Number($('max_exposure').value) < 1) $('max_exposure').value = '1';", html)
 
+    def test_console_offers_a_fresh_code_instead_of_a_typed_seed(self):
+        html = app_page()
+        self.assertIn('id="fresh_seed" type="checkbox"', html)
+        self.assertIn("$('seed').disabled = fresh;", html)
+        self.assertIn("if ($('fresh_seed').checked) body.fresh_seed = true;", html)
+        self.assertIn('never stakes money', html)
+
+    def test_console_offers_an_order_and_band_over_the_distinct_list(self):
+        html = app_page()
+        for control in ('id="s2-order"', 'id="s2-min"', 'id="s2-max"', 'id="s2-view-reset"'):
+            self.assertIn(control, html)
+        self.assertIn('Lowest odds first', html)
+        self.assertIn('Highest odds first', html)
+        # It is a view: no band ever reaches the API, and stage 3 says so on the page.
+        self.assertIn("not on whatever stage 2's order/band controls are showing", html)
+        self.assertNotIn("min_odds: readPrefs", html)
+        self.assertIn('Copy shown codes', html)
+
     def test_console_labels_odds_and_names_the_three_stages(self):
         html = app_page()
         self.assertIn('recorded, not verified payout', html)
@@ -254,6 +272,125 @@ class ConsoleStateTests(unittest.TestCase):
                 self.assertTrue(case['otherEnabled'] and case['pendingLocked'] and case['noOtherPaint'])
                 self.assertIn('RUN_NEW', case['state_line'])
                 self.assertTrue(case['run_disabled'] and case['polling'])
+
+    def test_fresh_seed_box_replaces_the_seed_field_and_reports_booking(self):
+        seen = self.seen['fresh_seed']
+        # Exactly one of the two controls supplies the seed.
+        self.assertFalse(seen['before']['seed_disabled'])
+        self.assertTrue(seen['ticked']['seed_disabled'])
+        self.assertEqual('booked for you when the run starts', seen['ticked']['hint'])
+        self.assertFalse(seen['unticked']['seed_disabled'])
+        self.assertEqual('7 characters, case kept', seen['unticked']['hint'])
+        # The request says fresh_seed and carries no seed at all.
+        self.assertEqual({'provider': 'bet9ja', 'fresh_seed': True}, seen['body'])
+        # A null seed on a live run reads as "still booking", never as "no seed".
+        self.assertIn('booking a fresh code in the browser', seen['while_booking']['state_line'])
+        self.assertEqual('booking…', seen['while_booking']['seed_row'])
+        self.assertIn('seed BK9JA07', seen['booked']['state_line'])
+        self.assertEqual('BK9JA07', seen['booked']['seed_row'])
+        self.assertTrue(seen['booked']['polling'])       # booked, still scanning
+        # A finished run that never got one says so, and shows the reason.
+        self.assertEqual('never booked', seen['finished']['seed_row'])
+        self.assertIn('fresh-seed booking failed: no code', seen['finished']['state_line'])
+        self.assertFalse(seen['finished']['polling'])
+
+    def test_stage2_list_can_be_ordered_and_banded_without_re_analysing(self):
+        seen = self.seen['distinct_view']
+        # Default: lowest odds first, everything listed, unpriced last.
+        self.assertEqual(['LOW111', 'MID222', 'HIGH33', 'NOPRICE'], seen['initial']['s2_shown'])
+        self.assertIn('Listed lowest odds first', seen['initial']['s2_note'])
+        # Highest first reverses the priced codes and leaves unpriced at the end.
+        self.assertEqual(['HIGH33', 'MID222', 'LOW111', 'NOPRICE'], seen['highest']['s2_shown'])
+        self.assertIn('Listed highest odds first', seen['highest']['s2_note'])
+        # A band narrows the list; an unpriced code cannot match one, and it says so.
+        self.assertEqual(['MID222'], seen['banded']['s2_shown'])
+        self.assertIn('Showing 1 of 4 with odds 10 to 1,000', seen['banded']['s2_note'])
+        self.assertIn('1 unpriced code(s) cannot match a band', seen['banded']['s2_note'])
+        # Copying takes exactly what is on screen, never the whole analysis.
+        for case in ('initial', 'highest', 'banded'):
+            with self.subTest(case=case):
+                self.assertEqual(seen[case]['s2_shown'], seen[case]['copied'].split('\n'))
+        # A band nothing reaches is empty and uncopyable, not silently ignored.
+        self.assertEqual([], seen['empty']['s2_shown'])
+        self.assertTrue(seen['empty']['copy_disabled'])
+        self.assertIn('"From odds" is above "To odds"', seen['inverted']['s2_note'])
+        self.assertEqual(['LOW111', 'MID222', 'HIGH33', 'NOPRICE'], seen['reset']['s2_shown'])
+
+    def test_stage2_list_view_changes_nothing_the_analyses_read(self):
+        seen = self.seen['distinct_view']
+        # Stage 3 ran while stage 2 showed 2 of 4, and still checked all 4.
+        self.assertEqual(['LOW111', 'MID222'], seen['with_stage3']['s2_shown'])
+        self.assertIn('all 4 fully-distinct code(s)', seen['with_stage3']['subset'])
+        # The request carries no band: the API is never asked to re-slice the pool.
+        self.assertEqual({'run_id': 'RUN_A', 'max_exposure': 1}, seen['with_stage3']['request_body'])
+
+    def test_stage2_band_belongs_to_its_provider_and_not_to_the_next_run(self):
+        seen = self.seen['distinct_view']['kept']
+        self.assertEqual('', seen['away']['max'])              # the other provider is clean
+        self.assertEqual(0, seen['away']['s2_cards'])
+        self.assertEqual('1000', seen['back']['max'])          # coming back is where you left
+        self.assertEqual(['LOW111', 'MID222'], seen['back']['s2_shown'])
+        self.assertEqual('', self.seen['distinct_view']['new_run']['max'])  # a new run starts unfiltered
+
+    def test_succeeded_run_lists_every_code_before_stage2_is_asked(self):
+        seen = self.seen['all_codes']
+        # While the scan runs, the codes saved so far are listed and said to be partial.
+        self.assertEqual(['LOW111', 'MID222'], seen['scanning']['shown'])
+        self.assertIn('2 code(s) saved so far', seen['scanning']['note'])
+        self.assertIn('still running', seen['scanning']['note'])
+        # A poll that brings no new qualifying code does not ask again.
+        self.assertEqual(0, seen['unchanged']['asks'])
+        # The status that shows it succeeded asks once more, by run id alone.
+        self.assertEqual(1, seen['asked']['asks'])
+        self.assertEqual({'run_id': 'RUN_A'}, seen['asked']['body'])
+        # Every code is listed, overlapping ones included, with stage 2 untouched.
+        listed = seen['listed']
+        self.assertFalse(listed['hidden'])
+        self.assertEqual(['LOW111', 'TWIN44', 'TWIN55', 'MID222', 'HIGH33', 'NOPRICE'], listed['shown'])
+        self.assertIn("6 code(s) in this run's odds band, overlapping ones included", listed['note'])
+        self.assertEqual(listed['shown'], listed['copied'].split('\n'))
+        self.assertEqual(0, listed['s2_cards'])
+        self.assertFalse(listed['s2_locked'])
+
+    def test_all_codes_list_has_its_own_order_and_band(self):
+        seen = self.seen['all_codes']
+        self.assertEqual(['HIGH33', 'MID222', 'TWIN55', 'TWIN44', 'LOW111', 'NOPRICE'], seen['highest']['shown'])
+        self.assertEqual(['LOW111', 'TWIN44', 'TWIN55', 'MID222'], seen['banded']['shown'])
+        self.assertIn('Showing 4 of 6 with odds up to 1,000', seen['banded']['note'])
+        self.assertEqual(seen['banded']['shown'], seen['banded']['copied'].split('\n'))
+        # Banding this list does not band stage 2's.
+        self.assertEqual(['LOW111', 'MID222', 'HIGH33', 'NOPRICE'], seen['beside_stage2']['s2'])
+        self.assertEqual('', seen['beside_stage2']['s2_max'])
+        self.assertEqual(seen['banded']['shown'], seen['beside_stage2']['s1'])
+        self.assertEqual(6, len(seen['reset']['shown']))
+
+    def test_all_codes_list_follows_its_provider_and_its_run(self):
+        seen = self.seen['all_codes']
+        # The other provider shows none of it; coming back repaints without refetching.
+        self.assertTrue(seen['away']['hidden'])
+        self.assertEqual([], seen['away']['shown'])
+        self.assertEqual(['LOW111', 'TWIN44', 'TWIN55', 'MID222'], seen['back']['shown'])
+        self.assertEqual('1000', seen['back']['max'])
+        self.assertEqual(0, seen['back']['asks'])
+        # Loading another run drops the old list at once and asks for the new one.
+        self.assertTrue(seen['replaced']['hidden'])
+        self.assertEqual([], seen['replaced']['shown'])
+        self.assertEqual(1, seen['replaced']['asks'])
+        # An empty pool is said, not shown as a blank.
+        self.assertIn('found no codes in its odds band', seen['none']['note'])
+        self.assertIn('1 extract row(s) were excluded', seen['none']['note'])
+        self.assertTrue(seen['none']['copy_disabled'])
+        self.assertTrue(seen['none']['controls_hidden'])
+        # A run that failed keeps the codes it had saved, and says it stopped early.
+        self.assertEqual(['LOW111', 'MID222'], seen['failed_run']['shown'])
+        self.assertIn('stopped early (failed)', seen['failed_run']['note'])
+        self.assertIn('2 code(s) were saved before it stopped', seen['failed_run']['note'])
+        # One with nothing saved shows nothing and raises no error.
+        self.assertTrue(seen['nothing_saved']['hidden'])
+        self.assertEqual('', seen['nothing_saved']['error'])
+        # A succeeded run owes its list, so a refusal there is reported.
+        self.assertIn('Cannot parse committed extract', seen['refused']['error'])
+        self.assertEqual([], seen['refused']['shown'])
 
     def test_submission_failure_is_restored_to_its_own_provider(self):
         case = self.seen['submission_switches']['failed']

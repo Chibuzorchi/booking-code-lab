@@ -14,14 +14,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))          # provider root
 
-from playwright.sync_api import sync_playwright
-
 from infra.config.settings import Settings
 from infra.clients.coupon_api import CouponApiClient
 from engine.scanner import CouponScanner
 from engine.logger import get_logger
-from pages.sports_page import SportsPage
-from pages.betslip_page import BetslipPage
+from scripts.booking import BookingError, book_one
 
 
 
@@ -49,42 +46,25 @@ def main() -> int:
     settings = Settings.load(args.env)
     logger = get_logger("book")
 
-    with sync_playwright() as pw:
-        _launch = {"headless": settings.headless,
-                   "args": ["--disable-blink-features=AutomationControlled"]}
-        if getattr(settings, "browser_channel", ""):
-            _launch["channel"] = settings.browser_channel
-        browser = pw.chromium.launch(**_launch)
-        context = browser.new_context(
-            user_agent=settings.user_agent,
-            locale=getattr(settings, "locale", "en-NG"),
-            timezone_id=getattr(settings, "timezone_id", "Africa/Lagos"),
-        )
-        page = context.new_page()
-        try:
-            sports = SportsPage(page, settings, logger)
-            sports.open().open_soccer().open_league()
-            pick = sports.pick_random_odd()
-            logger.info(f"Picked: {pick}")
-            betslip = BetslipPage(page, settings, logger)
-            code = betslip.book_a_bet()
-            betslip.close_modal().clear_betslip()
-        finally:
-            context.close()
-            browser.close()
+    # Same browser flow the fresh-seed runs use (scripts.book_and_scan), so a
+    # code booked here and a code booked by the console come from one path.
+    try:
+        code = book_one(settings, logger)
+    except BookingError as exc:
+        logger.error(f"booking failed: {exc}")
+        return 1
 
     print(f"\nBOOKING CODE: {code}")
 
     # Persist the code so it appears in the browser report (source of truth = booked/).
-    if code:
-        out_dir = settings.results_dir / "booked"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        record = [{"order": 1, "code": code, "ts": int(time.time() * 1000)}]
-        (out_dir / f"booked_{stamp}.json").write_text(json.dumps(record, indent=2))
-        (out_dir / f"booked_{stamp}.txt").write_text(f"{code}\n")
-        logger.info(f"saved code -> {out_dir}/booked_{stamp}.json")
-        refresh_report("bet9ja", settings.results_dir, logger)
+    out_dir = settings.results_dir / "booked"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    record = [{"order": 1, "code": code, "ts": int(time.time() * 1000)}]
+    (out_dir / f"booked_{stamp}.json").write_text(json.dumps(record, indent=2))
+    (out_dir / f"booked_{stamp}.txt").write_text(f"{code}\n")
+    logger.info(f"saved code -> {out_dir}/booked_{stamp}.json")
+    refresh_report("bet9ja", settings.results_dir, logger)
 
     if args.scan:
         api = CouponApiClient(settings, logger)

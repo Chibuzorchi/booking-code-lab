@@ -35,6 +35,10 @@ STOP_QUALIFYING_LIMIT = "qualifying_limit"
 STOP_TRY_BUDGET = "try_budget"
 STOP_CANDIDATES_EXHAUSTED = "candidates_exhausted"
 PROGRESS_INTERVAL_S = 0.5
+# How stale the saved-so-far file may get while hits keep arriving. A worker
+# killed outright (cancel, crash, power) loses at most this much.
+CHECKPOINT_INTERVAL_S = 1.0
+CHECKPOINT_NAME = "checkpoint.json"
 
 
 @dataclass
@@ -62,6 +66,8 @@ class CouponScanner:
         self.settings = settings
         self.logger = logger or get_logger("scanner")
         self._last_progress = 0.0
+        self._last_checkpoint = 0.0
+        self._checkpointed = -1
 
     def _progress_path(self) -> Path:
         return self.settings.results_dir / "progress.json"
@@ -96,12 +102,76 @@ class CouponScanner:
         except OSError:
             pass
 
+    def _extract_payload(self, result: ScanResult, eligible: list[Coupon],
+                         excluded_at_save: int = 0) -> dict:
+        return {
+            "provider": getattr(self.settings, "provider", ""),
+            "seed": result.seed,
+            "tried": result.tried,
+            "found_ok": result.found_ok,
+            "excluded_simulations": result.excluded_simulations + excluded_at_save,
+            "unpriced_excluded": result.unpriced,
+            "simulation_filter": "Z. / SRL / simulated / simulation / virtual labels",
+            "odds_basis": result.odds_basis,
+            "stop_reason": result.stop_reason,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "min_total_odds": result.effective_min_odds if result.effective_min_odds is not None else self.settings.min_total_odds,
+            "max_total_odds": self.settings.max_total_odds,
+            "min_legs": self.settings.min_legs,
+            "max_legs": self.settings.max_legs,
+            "top_n_display": self.settings.top_n,
+            "max_qualifying": self.settings.max_qualifying,
+            "max_codes_to_try": self.settings.max_codes_to_try,
+            "max_mutation_depth": self.settings.max_mutation_depth,
+            "request_workers": self.settings.request_workers,
+            "qualifying": [c.as_dict() for c in sorted(eligible, key=lambda c: c.code)],
+        }
+
+    def _write_checkpoint(self, result: ScanResult, force: bool = False) -> None:
+        """Save the qualifying coupons found so far (atomic, throttled).
+
+        The extract is written once, after the loop; until then a cancelled or
+        crashed worker would take every hit with it. This file has the
+        extract's shape plus ``partial``, and sits OUTSIDE extracts/ so it is
+        never mistaken for the run's one committed extract.
+        """
+        count = len(result.qualifying)
+        if count == self._checkpointed:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_checkpoint < CHECKPOINT_INTERVAL_S:
+            return
+        path = self.settings.results_dir / CHECKPOINT_NAME
+        try:
+            payload = self._extract_payload(result, list(result.qualifying))
+            payload["partial"] = True
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(".checkpoint.tmp")
+            with tmp.open("w", encoding="utf-8") as stream:
+                json.dump(payload, stream, allow_nan=False)
+            os.replace(tmp, path)
+        except (OSError, ValueError):
+            return                      # a failed save must never stop the scan
+        self._last_checkpoint = now
+        self._checkpointed = count
+
     def scan(self, seed: str, min_total_odds: float | None = None) -> ScanResult:
         min_odds = self.settings.min_total_odds if min_total_odds is None else min_total_odds
         result = ScanResult(seed=seed, effective_min_odds=min_odds)
         seen_fingerprints: set[frozenset[str]] = set()
         self._last_progress = 0.0
+        self._last_checkpoint = time.monotonic()
+        self._checkpointed = 0
         self._write_progress(result, force=True)
+        try:
+            return self._scan(seed, min_odds, result, seen_fingerprints)
+        finally:
+            # However the loop ended -- budget, limit, or an exception on its
+            # way out -- what was found is on disk before anything else runs.
+            self._write_checkpoint(result, force=True)
+
+    def _scan(self, seed: str, min_odds: float, result: ScanResult,
+              seen_fingerprints: set) -> ScanResult:
 
         seed_coupon = self.client.decode(seed)
         if seed_coupon.ok:
@@ -184,6 +254,7 @@ class CouponScanner:
                         result.stop_reason = STOP_QUALIFYING_LIMIT
                         exhausted = True
                         break
+                    self._write_checkpoint(result)
                 self._write_progress(result)
 
         if result.stop_reason is None:
@@ -226,28 +297,8 @@ class CouponScanner:
         extract_path = extracts_dir / f"scan_{result.seed}_{stamp}.json"
         extract_tmp = extracts_dir / f".tmp-{stamp}"
         with extract_tmp.open("w", encoding="utf-8") as stream:
-            json.dump({
-            "provider": getattr(self.settings, "provider", ""),
-            "seed": result.seed,
-            "tried": result.tried,
-            "found_ok": result.found_ok,
-            "excluded_simulations": result.excluded_simulations + excluded_at_save,
-            "unpriced_excluded": result.unpriced,
-            "simulation_filter": "Z. / SRL / simulated / simulation / virtual labels",
-            "odds_basis": result.odds_basis,
-            "stop_reason": result.stop_reason,
-            "saved_at": datetime.now(timezone.utc).isoformat(),
-            "min_total_odds": result.effective_min_odds if result.effective_min_odds is not None else self.settings.min_total_odds,
-            "max_total_odds": self.settings.max_total_odds,
-            "min_legs": self.settings.min_legs,
-            "max_legs": self.settings.max_legs,
-            "top_n_display": self.settings.top_n,
-            "max_qualifying": self.settings.max_qualifying,
-            "max_codes_to_try": self.settings.max_codes_to_try,
-            "max_mutation_depth": self.settings.max_mutation_depth,
-            "request_workers": self.settings.request_workers,
-            "qualifying": [c.as_dict() for c in sorted(eligible, key=lambda c: c.code)],
-        }, stream, indent=2, allow_nan=False)
+            json.dump(self._extract_payload(result, eligible, excluded_at_save),
+                      stream, indent=2, allow_nan=False)
         os.replace(extract_tmp, extract_path)
 
         self.logger.info(

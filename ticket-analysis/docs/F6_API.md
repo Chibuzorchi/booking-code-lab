@@ -26,6 +26,7 @@ There is no CORS opt-in. No endpoint places a paid bet.
 | GET | `/api/scan/<run_id>` | Registry status, nested `counters`, `stop_reason`, error and committed extract metadata |
 | POST | `/api/scan/<run_id>/cancel` | `{}`; 200 with status (cancellation can still be pending) |
 | GET | `/api/runs?provider=sportybet` | `{ "runs": [...] }`, newest first; provider optional |
+| POST | `/api/codes` | `{ "run_id": "..." }`; pool metadata, exclusions and every eligible ticket in `codes`, with no analysis applied. For a run that has not succeeded it answers from the worker's `checkpoint.json` with `partial: true`, or 409 when nothing is saved |
 | POST | `/api/distinct` | `{ "run_id": "..." }`; pool metadata, exclusions, counts and distinct/overlapping tickets |
 | POST | `/api/decorrelate` | `{ "run_id": "...", "max_exposure": 1, "target": 10 }`; full-pool metadata and selection/rejection explanations |
 | GET | `/app` | The three-stage console page (HTML); loopback-guarded like every other route |
@@ -42,12 +43,22 @@ Scan fields:
   are rejected.
 - `max_odds`: finite non-negative number; default/blank/null 350000; explicit 0
   disables the ceiling. Positive maximum must be >= the effective minimum.
-- `fresh_seed`: optional boolean; true returns 501 until booking orchestration
-  is implemented. No implicit last-seed lookup or automatic booking occurs.
+- `fresh_seed`: optional boolean, default false. True starts a run that books
+  its own code first: the worker opens the provider in a browser, books one
+  coupon, records the code in the run's `seed.json`, and then scans from it in
+  the same process, under the same run id and the same provider lock. Supply
+  `seed` or `fresh_seed`, never both (400). A provider whose tree has no
+  `scripts/book_and_scan.py` returns 501. There is still no implicit last-seed
+  lookup: nothing is booked unless the caller asks for it. Booking reserves a
+  coupon code; it never stakes money.
 
 Mutation depth is fixed at 3. Client-supplied filesystem paths, environment
-settings, odds basis and analysis band overrides are refused. Both analysis
-routes consume the full eligible pool from the registry's exact hash-verified
+settings, odds basis and analysis band overrides are refused. While it scans,
+the worker rewrites `checkpoint.json` in its run directory (at most once a
+second, atomically) with the qualifying coupons found so far, so a run that is
+cancelled or fails keeps them. Only `/api/codes` reads it; `/api/distinct` and
+`/api/decorrelate` still require a succeeded run. `/api/codes` and
+both analysis routes consume the full eligible pool from the registry's exact hash-verified
 byte snapshot, parsed once and using its recorded harvest policy. File replacement after lookup
 cannot change the snapshot analyzed. Odds are labelled "recorded, not verified
 payout". `max_exposure` defaults to 1 and must be >= 1; optional target must be
@@ -55,12 +66,21 @@ payout". `max_exposure` defaults to 1 and must be >= 1; optional target must be
 are a subset of the cap-1 selection when no target limit is supplied; the counts
 need not be equal.
 
+A fresh-seed run has no seed to report until booking finishes, so `seed` is
+null while the run is active ("still booking") and `request.seed` stays null
+for the life of the run. Once the code is booked, `seed` carries it on every
+read, including in `/api/runs`. If booking fails, the run ends `failed` with
+`error.code = "booking_failed"` and the provider's own reason in the message.
+
 Example (substitute a current seed):
 
 ```sh
 curl -s http://127.0.0.1:8000/api/scan \
   -H 'Content-Type: application/json' \
   -d '{"provider":"sportybet","seed":"ABC123","try_budget":100,"want_count":5}'
+curl -s http://127.0.0.1:8000/api/scan \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"bet9ja","fresh_seed":true,"try_budget":100}'   # books its own code
 curl -s http://127.0.0.1:8000/api/scan/RUN_ID
 curl -s http://127.0.0.1:8000/api/distinct \
   -H 'Content-Type: application/json' -d '{"run_id":"RUN_ID"}'
@@ -70,10 +90,13 @@ Errors have `{ "error": { "code": "...", "message": "..." } }`. Status codes:
 400 invalid input, 403 local/origin restriction, 404 unknown route/run, 409 busy
 provider or unavailable/changed committed artifact, 413 oversized body, 415
 wrong content type, 405 unsupported method on a known route, 422 unusable analysis extract, 500 server operation failure (including missing scanners),
-501 fresh-seed booking unavailable. A 202 acknowledges the registry submission;
+501 the provider has no fresh-seed booking entrypoint. A 202 acknowledges the registry submission;
 inspect `state`, since launch failure can already be recorded. Cancellation is
 idempotent; poll until ownership has ended rather than assuming 200 means stopped.
 
 Verification uses real local HTTP requests and fixture worker subprocesses for
-both providers, with no provider traffic. Live provider acceptance and browser
-acceptance remain separate gates; fresh-seed orchestration is still outstanding.
+both providers, with no provider traffic: the fresh-seed path is covered by a
+fixture that books a fake code and hands over to the scan fixture exactly as
+`book_and_scan.py` hands over to `scan_code.py`. Live provider acceptance and
+browser acceptance remain separate gates: no test in this suite has opened a
+real browser or booked a real coupon.
