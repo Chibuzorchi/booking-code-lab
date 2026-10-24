@@ -118,6 +118,13 @@ class ResultsApiConfig:
     per_call_timeout: float = 15.0
     max_requests_per_job: int = 90
     identity_config_path: Path | None = None
+    # Whether a report may still publish when one or more needed dates
+    # never finished fetching (F9_STEP5_REVIEW.md S5-10). Deliberately a
+    # server-controlled setting, not the client-supplied `allow_partial`
+    # request flag: that flag controls population-loading mode (a frozen
+    # checkpoint vs. a committed extract) -- an unrelated question from
+    # whether this server tolerates an incomplete source fetch.
+    tolerate_incomplete_fetch: bool = False
 
     def cache_root(self) -> Path:
         return self.root / "cache"
@@ -164,15 +171,33 @@ def compute_config_digest(config: ResultsApiConfig) -> str:
         "daily_quota": config.daily_quota, "max_workers": config.max_workers,
         "max_retries": config.max_retries, "per_call_timeout": config.per_call_timeout,
         "max_requests_per_job": config.max_requests_per_job, "parser_version": PARSER_VERSION,
+        "tolerate_incomplete_fetch": config.tolerate_incomplete_fetch,
         "identity_config_sha256": hashlib.sha256(identity_bytes).hexdigest(),
     }, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
-def load_population(registry, run_id: str):
-    """-> (provider, input_digest, rows) where rows is row_id -> raw ticket
-    dict, row_id = f"{digest}:{index}" (same scheme as inputs.audit_run)."""
-    path, raw = registry.committed_extract_snapshot(run_id)
+def load_population(registry, run_id: str, *, allow_partial: bool = False):
+    """-> (provider, input_digest, rows, population_complete) where rows is
+    row_id -> raw ticket dict, row_id = f"{digest}:{index}" (same scheme as
+    inputs.audit_run).
+
+    allow_partial implements the plan's frozen-checkpoint mode
+    (F9_RESULTS_PLAN.md section 2, F9_STEP5_REVIEW.md S5-10): when the run
+    has not succeeded, it reads the worker's last-saved checkpoint instead
+    of raising, and freezes that checkpoint's exact bytes as this job's
+    input (same digest/row-identity scheme as a committed extract) with
+    population_complete=False. When the run has succeeded, the checkpoint
+    path is never taken -- registry.saved_codes_snapshot() itself returns
+    the committed extract with population_complete=True regardless of
+    allow_partial, so a complete run is never silently weakened to a
+    partial one. allow_partial=False (the default) preserves the original
+    behavior: only a succeeded run's committed extract is ever read."""
+    if allow_partial:
+        path, raw, partial = registry.saved_codes_snapshot(run_id)
+    else:
+        path, raw = registry.committed_extract_snapshot(run_id)
+        partial = False
     digest = hashlib.sha256(raw).hexdigest()
     try:
         data = json.loads(raw)
@@ -191,7 +216,7 @@ def load_population(registry, run_id: str):
     # audit_rows reconciliation reports it as an explicit unresolved row
     # rather than one that simply never existed.
     rows = {f"{digest}:{index}": ticket for index, ticket in enumerate(qualifying)}
-    return data.get("provider"), digest, rows
+    return data.get("provider"), digest, rows, not partial
 
 
 def _build_audit_rows(provider, rows: dict) -> dict:
@@ -332,7 +357,8 @@ def _cache_key_for_date(date: str) -> CacheKey:
                            parser_version=PARSER_VERSION)
 
 
-def _make_fetch_one(client, cache: FixtureCache, quota: QuotaTracker) -> Callable:
+def _make_fetch_one(client, cache: FixtureCache, quota: QuotaTracker, *,
+                     refresh: bool = False) -> Callable:
     def fetch_one(task: Task):
         date = task.payload
         key = _cache_key_for_date(date)
@@ -363,7 +389,16 @@ def _make_fetch_one(client, cache: FixtureCache, quota: QuotaTracker) -> Callabl
             all_terminal = bool(fixtures) and all(f.is_finished for f in fixtures)
             return json.dumps(raw_fixtures).encode("utf-8"), all_terminal
 
-        cache.get_or_fetch(key, _fetch)
+        if refresh:
+            # refresh=True forces a bypass of the normal staleness check
+            # (F9_STEP5_REVIEW.md S5-10) -- every date is refetched
+            # regardless of age -- but the S5-09 terminal-entry guard
+            # inside get_or_fetch still applies underneath this, so a
+            # forced refresh can never erase a previously validated
+            # terminal fact with a worse (non-terminal) result.
+            cache.get_or_fetch(key, _fetch, is_stale=lambda entry: True)
+        else:
+            cache.get_or_fetch(key, _fetch)
         return date
     return fetch_one
 
@@ -458,7 +493,8 @@ def get_latest_report(config: ResultsApiConfig, run_id: str) -> dict:
     manifest, report = _verified_revision_report(config, run_id, pointer["revision_id"])
     return {"revision_id": manifest["revision_id"], "run_id": run_id, "created_at": manifest["created_at"],
             "counts": report["counts"], "percentages": report["percentages"],
-            "rule_versions": report["rule_versions"]}
+            "rule_versions": report["rule_versions"],
+            "population_complete": report.get("population_complete", True)}
 
 
 def list_codes(config: ResultsApiConfig, run_id: str, revision_id: str, *,
@@ -516,29 +552,52 @@ def _reclaim_if_abandoned(job_store: JobStore, job: JobRecord) -> JobRecord:
                           "worker presumed lost (e.g. a server restart)"}))
 
 
+def _job_identity_digest(input_digest: str, allow_partial: bool) -> str:
+    """Folds allow_partial into job identity (F9_STEP5_REVIEW.md S5-10): a
+    frozen-checkpoint (partial) evaluation and a committed-extract
+    (complete) evaluation of the same run must never share identity even
+    if their content digests happened to coincide, since they carry
+    different population_complete guarantees that a reused job record
+    would silently paper over."""
+    return hashlib.sha256(f"{input_digest}:{allow_partial}".encode()).hexdigest()
+
+
 def submit_evaluation(registry, config: ResultsApiConfig, job_store: JobStore, run_id: str, *,
                        refresh: bool = False, allow_partial: bool = False,
                        client_factory: Callable[[], object] | None = None):
     """Starts (or returns the existing active job for) one evaluation of
     run_id. Never blocks on fetching/evaluating/publishing -- the real work
     runs on a background thread; this returns as soon as the job record
-    exists. `refresh` is accepted for the API contract but delegates to
-    cache.py's own staleness policy rather than forcing a refetch: every
-    fetch_one call already re-checks staleness itself.
+    exists.
+
+    allow_partial implements the plan's frozen-checkpoint mode (see
+    load_population) -- a cancelled/failed run with a saved checkpoint can
+    still be evaluated, with the published report labeled
+    population_complete=False, instead of always raising ResultsApiError
+    for any non-succeeded run (F9_STEP5_REVIEW.md S5-10).
+
+    refresh forces every date this run needs past the cache's own
+    staleness check, so a bypassed source re-fetch happens even for an
+    entry that would otherwise still be considered fresh -- but S5-09's
+    terminal-entry guard still applies underneath it, so a forced refresh
+    can never erase a previously validated terminal fact with a worse
+    (non-terminal) result.
 
     client_factory defaults to a real ApiFootballClient bound to this
     config's per_call_timeout (S5-08) -- left None rather than defaulted at
     def-time so it can see the config this call actually received."""
     if client_factory is None:
         client_factory = _default_client_factory(config)
-    provider, input_digest, rows = load_population(registry, run_id)
+    provider, input_digest, rows, population_complete = load_population(
+        registry, run_id, allow_partial=allow_partial)
     config_digest = compute_config_digest(config)
-    outer = job_store.create_or_reuse(run_id, input_digest, config_digest)
+    job_identity = _job_identity_digest(input_digest, allow_partial)
+    outer = job_store.create_or_reuse(run_id, job_identity, config_digest)
     outer = _reclaim_if_abandoned(job_store, outer)
     if outer.is_terminal:
         # The job just reclaimed as orphaned is now terminal, so this call
         # mints a fresh job for the same identity instead of reusing it.
-        outer = job_store.create_or_reuse(run_id, input_digest, config_digest)
+        outer = job_store.create_or_reuse(run_id, job_identity, config_digest)
 
     # Claiming the STARTING -> RUNNING transition here (under update()'s
     # flock) -- rather than inside the background thread -- is what makes
@@ -558,7 +617,7 @@ def submit_evaluation(registry, config: ResultsApiConfig, job_store: JobStore, r
         thread = threading.Thread(
             target=_run_evaluation_job,
             args=(config, job_store, outer.job_id, run_id, provider, input_digest, config_digest,
-                  rows, allow_partial, client_factory),
+                  rows, population_complete, refresh, client_factory),
             daemon=True)
         thread.start()
     return job_store.get(outer.job_id)
@@ -585,7 +644,8 @@ def _commit_publication(job_store: JobStore, outer_job_id: str, result: dict) ->
 
 def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job_id: str, run_id: str,
                          provider, input_digest: str, config_digest: str, rows: dict,
-                         allow_partial: bool, client_factory: Callable[[], object]) -> None:
+                         population_complete: bool, refresh: bool,
+                         client_factory: Callable[[], object]) -> None:
     try:
         cache = FixtureCache(config.cache_root())
         quota = QuotaTracker(config.quota_root(), "api_football", config.daily_quota)
@@ -603,7 +663,7 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
                 job_store.update(outer_job_id, lambda r: r.update(
                     state=JobState.FAILED, error={"code": "source_unavailable", "message": str(exc)}))
                 return
-            fetch_one = _make_fetch_one(client, cache, quota)
+            fetch_one = _make_fetch_one(client, cache, quota, refresh=refresh)
             budget = JobBudget(max_requests=config.max_requests_per_job, max_retries=config.max_retries,
                                 per_call_timeout=config.per_call_timeout, max_workers=config.max_workers)
             tasks = [Task(key=date, payload=date) for date in dates]
@@ -621,11 +681,12 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
                 job_store.update(outer_job_id, lambda r: r.update(state=JobState.CANCELLED))
                 return
             incomplete = outcome.incomplete_task_keys
-            if incomplete and not allow_partial:
+            if incomplete and not config.tolerate_incomplete_fetch:
                 job_store.update(outer_job_id, lambda r: r.update(
                     state=JobState.FAILED, error={
                         "code": "incomplete_fetch",
-                        "message": f"{len(incomplete)} date(s) not fetched and allow_partial is false"}))
+                        "message": f"{len(incomplete)} date(s) not fetched and "
+                                   f"tolerate_incomplete_fetch is false"}))
                 return
 
         if job_store.get(outer_job_id).cancel_requested:
@@ -661,6 +722,11 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
             job_store.update(outer_job_id, lambda r: r.update(
                 state=JobState.FAILED, error={"code": "evaluation_failed", "message": str(exc)}))
             return
+        # A partial-run report must not read as if it carries a full-run's
+        # claim (F9_RESULTS_PLAN.md): population_complete=False marks every
+        # report built from a frozen checkpoint rather than a committed
+        # extract.
+        report["population_complete"] = population_complete
 
         try:
             revision_id = publish_revision(config, run_id, evidence, report, audit_rows=audit_rows,

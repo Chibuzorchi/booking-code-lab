@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 from tempfile import TemporaryDirectory
 
+from portfolio.registry import RunStateError
 from portfolio.results_tracking import __main__ as results_cli
 from portfolio.results_tracking.jobs import JobState, JobStore
 from portfolio.results_tracking.cache import FixtureCache
@@ -28,11 +29,23 @@ from portfolio.results_tracking.sources.api_football import build_fixture, filte
 
 
 class FakeRegistry:
-    def __init__(self, extract: dict):
-        self._raw = json.dumps(extract).encode("utf-8")
+    def __init__(self, extract: dict | None = None, *, checkpoint: dict | None = None,
+                 succeeded: bool = True):
+        self._raw = json.dumps(extract).encode("utf-8") if extract is not None else None
+        self._checkpoint_raw = json.dumps(checkpoint).encode("utf-8") if checkpoint is not None else None
+        self._succeeded = succeeded
 
     def committed_extract_snapshot(self, run_id):
+        if not self._succeeded or self._raw is None:
+            raise RunStateError(f"run {run_id} has no committed extract")
         return Path("fake-extract.json"), self._raw
+
+    def saved_codes_snapshot(self, run_id):
+        if self._succeeded:
+            return Path("fake-extract.json"), self._raw, False
+        if self._checkpoint_raw is None:
+            raise RunStateError(f"run {run_id} has no saved codes")
+        return Path("fake-checkpoint.json"), self._checkpoint_raw, True
 
 
 def _extract(tickets):
@@ -77,9 +90,10 @@ class LoadPopulationTests(unittest.TestCase):
         extract = _extract([_ticket("C1", "A - B", "England - Premier League", "1X2", "1",
                                      "2026-10-23T15:00:00")])
         registry = FakeRegistry(extract)
-        provider, digest, rows = load_population(registry, "run-1")
+        provider, digest, rows, population_complete = load_population(registry, "run-1")
         self.assertEqual(provider, "bet9ja")
         self.assertEqual(list(rows.keys()), [f"{digest}:0"])
+        self.assertTrue(population_complete)
 
     def test_rejects_non_list_qualifying(self):
         registry = FakeRegistry({"provider": "bet9ja", "qualifying": "not-a-list"})
@@ -92,7 +106,7 @@ class LoadPopulationTests(unittest.TestCase):
         valid = _ticket("C1", "A - B", "England - Premier League", "1X2", "1",
                          "2026-10-23T15:00:00")
         registry = FakeRegistry(_extract([valid, None, 42]))
-        provider, digest, rows = load_population(registry, "run-1")
+        provider, digest, rows, population_complete = load_population(registry, "run-1")
         self.assertEqual(len(rows), 3)
         self.assertEqual(rows[f"{digest}:0"], valid)
         self.assertIsNone(rows[f"{digest}:1"])
@@ -580,6 +594,133 @@ class SubmitEvaluationTests(unittest.TestCase):
             replayed_report = json.loads((replay_out / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(len(replayed_report["tickets"]), 1)
             self.assertIsNotNone(replayed_report["tickets"][0]["row_id"])
+
+    def test_a_non_succeeded_run_without_allow_partial_is_refused(self):
+        # F9_RESULTS_PLAN.md: only a succeeded run's committed extract is
+        # ever read unless the caller explicitly opts into the partial
+        # frozen-checkpoint mode.
+        with TemporaryDirectory() as tmp:
+            registry = FakeRegistry(succeeded=False, checkpoint=_extract([
+                _ticket("C1", "Arsenal - Chelsea", "England - Premier League", "1X2", "1",
+                        "2026-10-23T15:00:00"),
+            ]))
+            config = ResultsApiConfig(root=Path(tmp) / "results_api")
+            job_store = JobStore(Path(tmp) / "jobs")
+            with self.assertRaises(RunStateError):
+                submit_evaluation(registry, config, job_store, "run-1",
+                                   client_factory=lambda: FakeApiFootballClient({}))
+
+    def test_allow_partial_evaluates_a_frozen_checkpoint_as_population_incomplete(self):
+        # S5-10: a cancelled/failed run with a saved checkpoint can still be
+        # evaluated under allow_partial=True, with the published report
+        # honestly marked population_complete=False rather than reading as
+        # a full-run claim.
+        with TemporaryDirectory() as tmp:
+            registry = FakeRegistry(succeeded=False, checkpoint=_extract([
+                _ticket("C1", "Arsenal - Chelsea", "England - Premier League", "1X2", "1",
+                        "2026-10-23T15:00:00"),
+            ]))
+            config = ResultsApiConfig(root=Path(tmp) / "results_api")
+            job_store = JobStore(Path(tmp) / "jobs")
+            client = FakeApiFootballClient({
+                "2026-10-23": [_raw_fixture(1, 39, "Premier League", "Arsenal", "Chelsea", "FT",
+                                             "2026-10-23T15:00:00+00:00", fulltime={"home": 2, "away": 1})],
+            })
+
+            record = submit_evaluation(registry, config, job_store, "run-1", allow_partial=True,
+                                        client_factory=lambda: client)
+            final = _wait_for_terminal(job_store, record.job_id)
+            self.assertEqual(final.state, JobState.SUCCEEDED)
+            report = get_latest_report(config, "run-1")
+            self.assertFalse(report["population_complete"])
+
+    def test_allow_partial_changes_job_identity_even_with_the_same_content(self):
+        # Review: "include behavior-changing options in job identity" --
+        # a frozen-checkpoint evaluation and a committed-extract evaluation
+        # of the same bytes must never silently share a job record, since
+        # they carry different population_complete guarantees.
+        with TemporaryDirectory() as tmp:
+            registry = FakeRegistry(_extract([
+                _ticket("C1", "Arsenal - Chelsea", "England - Premier League", "1X2", "1",
+                        "2026-10-23T15:00:00"),
+            ]))
+            config = ResultsApiConfig(root=Path(tmp) / "results_api")
+            job_store = JobStore(Path(tmp) / "jobs")
+            client = FakeApiFootballClient({
+                "2026-10-23": [_raw_fixture(1, 39, "Premier League", "Arsenal", "Chelsea", "FT",
+                                             "2026-10-23T15:00:00+00:00", fulltime={"home": 2, "away": 1})],
+            })
+
+            without_partial = submit_evaluation(registry, config, job_store, "run-1",
+                                                  client_factory=lambda: client)
+            _wait_for_terminal(job_store, without_partial.job_id)
+            with_partial = submit_evaluation(registry, config, job_store, "run-1", allow_partial=True,
+                                               client_factory=lambda: client)
+            self.assertNotEqual(without_partial.job_id, with_partial.job_id)
+            _wait_for_terminal(job_store, with_partial.job_id)
+
+    def test_refresh_forces_a_refetch_past_a_still_fresh_terminal_cache_entry(self):
+        # S5-10: refresh=True bypasses the normal staleness check so a
+        # forced re-fetch happens even for a date whose cached entry is
+        # still well within its freshness window.
+        with TemporaryDirectory() as tmp:
+            registry = FakeRegistry(_extract([
+                _ticket("C1", "Arsenal - Chelsea", "England - Premier League", "1X2", "1",
+                        "2026-10-23T15:00:00"),
+            ]))
+            config = ResultsApiConfig(root=Path(tmp) / "results_api")
+            job_store = JobStore(Path(tmp) / "jobs")
+            client = FakeApiFootballClient({
+                "2026-10-23": [_raw_fixture(1, 39, "Premier League", "Arsenal", "Chelsea", "FT",
+                                             "2026-10-23T15:00:00+00:00", fulltime={"home": 2, "away": 1})],
+            })
+
+            first = submit_evaluation(registry, config, job_store, "run-1", client_factory=lambda: client)
+            _wait_for_terminal(job_store, first.job_id)
+            self.assertEqual(client.calls, ["2026-10-23"])
+
+            # Same identity, already terminal: a plain resubmission mints a
+            # fresh job but the still-fresh/terminal cache entry means the
+            # source is not actually re-hit.
+            again = submit_evaluation(registry, config, job_store, "run-1", client_factory=lambda: client)
+            self.assertNotEqual(first.job_id, again.job_id)
+            _wait_for_terminal(job_store, again.job_id)
+            self.assertEqual(client.calls, ["2026-10-23"])
+
+            refreshed = submit_evaluation(registry, config, job_store, "run-1", refresh=True,
+                                           client_factory=lambda: client)
+            _wait_for_terminal(job_store, refreshed.job_id)
+            self.assertEqual(client.calls, ["2026-10-23", "2026-10-23"])
+
+    def test_tolerate_incomplete_fetch_config_setting_controls_publish_on_incomplete_dates(self):
+        # S5-10: the server-side config setting -- not the client-supplied
+        # allow_partial flag -- is what decides whether an incomplete
+        # source fetch can still publish.
+        with TemporaryDirectory() as tmp:
+            registry = FakeRegistry(_extract([
+                _ticket("C1", "Arsenal - Chelsea", "England - Premier League", "1X2", "1",
+                        "2026-10-23T15:00:00"),
+                _ticket("C2", "Leeds - Burnley", "England - Championship", "1X2", "1",
+                        "2026-10-24T15:00:00"),
+            ]))
+            client = FakeApiFootballClient({"2026-10-23": [], "2026-10-24": []})
+            tight_budget = ResultsApiConfig(root=Path(tmp) / "strict", max_requests_per_job=1,
+                                             max_retries=0)
+            job_store = JobStore(Path(tmp) / "jobs-strict")
+            record = submit_evaluation(registry, tight_budget, job_store, "run-1",
+                                        client_factory=lambda: client)
+            final = _wait_for_terminal(job_store, record.job_id)
+            self.assertEqual(final.state, JobState.FAILED)
+            self.assertEqual(final.error["code"], "incomplete_fetch")
+
+            tolerant = ResultsApiConfig(root=Path(tmp) / "tolerant", max_requests_per_job=1,
+                                         max_retries=0, tolerate_incomplete_fetch=True)
+            job_store2 = JobStore(Path(tmp) / "jobs-tolerant")
+            record2 = submit_evaluation(registry, tolerant, job_store2, "run-1",
+                                         client_factory=lambda: client)
+            final2 = _wait_for_terminal(job_store2, record2.job_id)
+            self.assertEqual(final2.state, JobState.SUCCEEDED)
+            self.assertEqual(len(final2.result["incomplete_dates"]), 1)
 
 
 class CommitPublicationTests(unittest.TestCase):
