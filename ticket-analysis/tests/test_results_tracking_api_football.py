@@ -127,6 +127,30 @@ class ExtractRegulationScoreTests(unittest.TestCase):
         with self.assertRaises(ApiFootballError):
             extract_regulation_score(fixture)
 
+    def test_null_fixture_container_returns_none_not_attribute_error(self):
+        # F9_IMPLEMENTATION_REREVIEW.md RR02: "fixture" present but JSON null
+        # means .get() returns None, not {} -- status is unavailable, so this
+        # must come back as None (not a trusted finished status), not crash.
+        self.assertIsNone(extract_regulation_score({"fixture": None}))
+
+    def test_null_score_container_on_finished_fixture_raises(self):
+        # RR02: status is FT (trusted) but "score" is JSON null -- this is a
+        # malformed finished-fixture payload and must raise ApiFootballError,
+        # not AttributeError.
+        fixture = {"fixture": {"status": {"short": "FT"}}, "score": None}
+        with self.assertRaises(ApiFootballError):
+            extract_regulation_score(fixture)
+
+    def test_non_object_fixture_container_raises(self):
+        fixture = {"fixture": "not-an-object", "score": {}}
+        with self.assertRaises(ApiFootballError):
+            extract_regulation_score(fixture)
+
+    def test_non_object_status_container_raises(self):
+        fixture = {"fixture": {"status": "FT"}, "score": {}}
+        with self.assertRaises(ApiFootballError):
+            extract_regulation_score(fixture)
+
 
 if __name__ == "__main__":
     unittest.main()

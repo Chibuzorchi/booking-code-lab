@@ -152,6 +152,23 @@ class OverUnderTests(unittest.TestCase):
         outcome = football.over_under("Over 2.5", "total=3;period=HT", RegulationScore(3, 0))
         self.assertEqual(outcome, ("unresolved", "invalid_input"))
 
+    def test_near_integer_high_precision_line_left_unresolved(self):
+        # F9_IMPLEMENTATION_REREVIEW.md RR01: dividing by 0.5 under the
+        # default decimal context rounds this line to look like an integer.
+        # It must stay unresolved, not get a binary won/lost outcome.
+        pick = "Over 2.0000000000000000000000000001"
+        spec = "total=2.0000000000000000000000000001"
+        outcome = football.over_under(pick, spec, RegulationScore(2, 0))
+        self.assertEqual(outcome, ("unresolved", "unsupported_line"))
+
+    def test_oversized_line_left_unresolved_not_invalid_operation(self):
+        # RR01: a line with enough digits to overflow the default decimal
+        # context must not raise decimal.InvalidOperation -- it must come
+        # back as the evaluator's normal (unresolved, reason) tuple.
+        line = "999999999999999999999999999999.5"
+        outcome = football.over_under(f"Over {line}", f"total={line}", RegulationScore(2, 0))
+        self.assertEqual(outcome, ("unresolved", "unsupported_line"))
+
 
 class WinEitherHalfTests(unittest.TestCase):
     def test_home_wins_second_half_only(self):

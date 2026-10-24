@@ -19,14 +19,26 @@ _OU_PICK_RE = re.compile(r"^(Over|Under)(?:\s+([0-9]+(?:\.[0-9]+)?))?$")
 # rejected outright (returns None), never silently ignored.
 _LINE_RE = re.compile(r"^(?:total=)?([0-9]+(?:\.[0-9]+)?)$")
 _SCORE_PICK_RE = re.compile(r"^([0-9]+):([0-9]+)$")
-_HALF_STEP = Decimal("0.5")
+
+# Real betting lines never carry more than a couple of significant digits
+# (e.g. "2.5", "10.5"). Rejecting anything beyond this bound before doing any
+# arithmetic means _is_supported_line() never has to divide (division is
+# context-sensitive and can silently round a non-half line to a false
+# "supported" answer) and never risks decimal.InvalidOperation on an
+# adversarially huge line -- it just reports the line as unsupported.
+_MAX_LINE_DIGITS = 12
 
 
 def _is_supported_line(line: Decimal) -> bool:
     """Only whole/half-goal lines (0, 0.5, 1, 1.5, ...) have a settlement
     model in this project. Quarter/split-return lines (e.g. 2.25) are left
-    unresolved per F9_RESULTS_PLAN.md until that model exists."""
-    return (line / _HALF_STEP) % 1 == 0
+    unresolved per F9_RESULTS_PLAN.md until that model exists, as is any
+    line too large/precise to be a real betting line (see _MAX_LINE_DIGITS)."""
+    _, digits, exponent = line.as_tuple()
+    if isinstance(exponent, str) or len(digits) > _MAX_LINE_DIGITS:
+        return False
+    doubled = line * 2
+    return doubled == doubled.to_integral_value()
 
 
 def parse_over_under(pick: str, specifier: str) -> tuple[str, Decimal] | None:

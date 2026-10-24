@@ -75,16 +75,32 @@ class ApiFootballClient:
         return response
 
 
+def _require_dict_or_empty(container: object, field_name: str) -> dict:
+    """container is the result of a .get() that may be legitimately absent
+    (-> {}) or explicitly present-but-null in the JSON (-> None, which .get()
+    passes through unchanged rather than substituting its default) or
+    present with the wrong type entirely. Only the first two are tolerated;
+    the third is a malformed shape and must raise, not crash the caller with
+    an AttributeError on the next field access."""
+    if container is None:
+        return {}
+    if not isinstance(container, dict):
+        raise ApiFootballError(f"{field_name} is not an object: {type(container)!r}")
+    return container
+
+
 def extract_regulation_score(fixture_json: dict) -> RegulationScore | None:
     """None when the fixture hasn't reached a status this module trusts for
     a regulation-time score (not yet played, in play, or a finish type -
     AET/PEN - whose fulltime semantics are unverified here)."""
-    status = fixture_json.get("fixture", {}).get("status", {}).get("short")
+    fixture = _require_dict_or_empty(fixture_json.get("fixture"), "fixture")
+    status_obj = _require_dict_or_empty(fixture.get("status"), "fixture.status")
+    status = status_obj.get("short")
     if status not in _REGULATION_FINISHED_STATUSES:
         return None
-    score = fixture_json.get("score", {})
-    fulltime = score.get("fulltime") or {}
-    halftime = score.get("halftime") or {}
+    score = _require_dict_or_empty(fixture_json.get("score"), "score")
+    fulltime = _require_dict_or_empty(score.get("fulltime"), "score.fulltime")
+    halftime = _require_dict_or_empty(score.get("halftime"), "score.halftime")
     ft_home, ft_away = fulltime.get("home"), fulltime.get("away")
     if ft_home is None or ft_away is None:
         raise ApiFootballError(
