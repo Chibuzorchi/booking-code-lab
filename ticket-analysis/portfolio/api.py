@@ -131,11 +131,15 @@ def dispatch(registry, method, path, body, query):
                 raise ExtractError('Cannot parse committed extract') from exc
             policy = harvest_odds_band(data)
             if path == '/api/codes':
-                # Every code the run harvested, before any analysis: the same
-                # eligible pool stages 2 and 3 read, listed rather than judged.
-                pool = build_pool(extract, status['provider'], data=data, **policy)
+                # Keep the analysis pool intact, and expose started historical
+                # tickets separately so the console can reveal their snapshots.
+                pool = build_pool(extract, status['provider'], data=data,
+                                  collect_expired=True, **policy)
                 codes = pool.pop('tickets')
+                expired = pool.pop('expired_tickets')
                 report = {**pool, 'codes': codes, 'partial': partial,
+                          'expired_codes': expired, 'expired_count': len(expired),
+                          'saved_count': len(data['qualifying']),
                           'state': status['state']}
             elif params is None:
                 report = analyze_extract(extract, status['provider'], data=data, **policy)

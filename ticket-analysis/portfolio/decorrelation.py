@@ -41,7 +41,8 @@ def harvest_odds_band(extract):
             "max_odds": None if upper is None or upper <= 0 else upper}
 
 
-def build_pool(extract_path, provider, *, odds_basis, min_odds, max_odds=None, data=None):
+def build_pool(extract_path, provider, *, odds_basis, min_odds, max_odds=None, data=None,
+               collect_expired=False):
     """Return normalized candidates and exclusions; never discover other files.
 
     The caller supplies the run's provider and odds policy. Missing prices on the
@@ -49,6 +50,8 @@ def build_pool(extract_path, provider, *, odds_basis, min_odds, max_odds=None, d
     Conflicting observations of one code fail explicitly, regardless of order.
     Optional parsed data comes from the registry integrity-checked snapshot; when supplied,
     the path is provenance only and is never reopened.
+    collect_expired keeps otherwise-eligible started tickets in a separate historical
+    list. They remain excluded from the analysis pool and retain their raw snapshot.
     """
     if provider not in ("bet9ja", "sportybet"):
         raise ParamError("unsupported provider")
@@ -70,7 +73,7 @@ def build_pool(extract_path, provider, *, odds_basis, min_odds, max_odds=None, d
     if data.get("provider") != provider:
         raise ExtractError("extract provider does not match run provider")
 
-    tickets, excluded, seen = [], [], {}
+    tickets, expired_tickets, excluded, seen = [], [], [], {}
     for index, raw in enumerate(data["qualifying"]):
         def exclude(reason, issues=None):
             excluded.append({"index": index, "reason": reason, "issues": issues or []})
@@ -88,21 +91,30 @@ def build_pool(extract_path, provider, *, odds_basis, min_odds, max_odds=None, d
                 exclude("duplicate_code")
                 continue
             seen[ticket["id"]] = fingerprint
+        expired_only = issues == ["coupon expired: a leg has already kicked off"]
         if ticket is None or issues:
             exclude("invalid_ticket", issues)
-            continue
+            if not (collect_expired and ticket is not None and expired_only):
+                continue
         price = odds_value(ticket, odds_basis)
         if price is None:
-            exclude("missing_odds")
+            if not expired_only:
+                exclude("missing_odds")
         elif price < lower or (upper is not None and price > upper):
-            exclude("outside_band")
+            if not expired_only:
+                exclude("outside_band")
         else:
             ticket["raw"] = raw          # preserve display fields alongside the normalized ticket
-            tickets.append(ticket)
+            if expired_only:
+                ticket["history_note"] = "A match has started; outcome not checked."
+                expired_tickets.append(ticket)
+            else:
+                tickets.append(ticket)
     return {"extract_path": str(path), "provider": provider,
             "odds_basis": odds_basis, "min_odds": lower, "max_odds": upper,
             "input_count": len(data["qualifying"]), "pool_size": len(tickets),
-            "tickets": tickets, "excluded": excluded}
+            "tickets": tickets, "excluded": excluded,
+            **({"expired_tickets": expired_tickets} if collect_expired else {})}
 
 
 def decorrelate_extract(extract_path, provider, params=None, *, odds_basis,

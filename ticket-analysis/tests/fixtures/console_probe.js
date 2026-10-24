@@ -604,6 +604,42 @@ Object.assign(scenarios, {
   },
 });
 
+scenarios.expired_history = async () => {
+  const world = await start();
+  await pick(world, 'RUN_A', 'succeeded');
+  const expired = Array.from({length: 26}, (_, i) => ({
+    ...ticket('PAST' + String(i).padStart(3, '0'), i + 10),
+    history_note: 'A match has started; outcome not checked.',
+  }));
+  answer(take(world, '/api/codes'), {...codesReport('RUN_A'), pool_size: 0,
+    codes: [], saved_count: 26, expired_count: 26, expired_codes: expired,
+    excluded: expired.map(() => ({reason: 'invalid_ticket'}))});
+  await settle();
+  const hidden = {cards: world.el('s1-cards').childNodes.length,
+    button: world.el('s1-expired').textContent, available: !world.el('s1-expired').hidden,
+    note: world.el('s1-count').textContent};
+  world.el('s1-expired').fire('click');
+  const revealed = {cards: world.el('s1-cards').childNodes.length,
+    page: world.el('s1-page-info').textContent,
+    label: world.el('s1-cards').childNodes[0].text,
+    pressed: world.el('s1-expired').getAttribute('aria-pressed')};
+  world.el('s1-copy-all').fire('click');
+  const copied = world.copied[0].split('\n').length;
+  world.el('s1-next').fire('click');
+  const finalPage = world.el('s1-cards').childNodes.length;
+  world.el('s1-expired').fire('click');
+  const rehidden = world.el('s1-cards').childNodes.length;
+  world.el('s1-expired').fire('click');
+  await switchTo(world, 'sportybet');
+  await switchTo(world, 'bet9ja');
+  const restored = world.el('s1-expired').getAttribute('aria-pressed');
+  await pick(world, 'RUN_B', 'succeeded');
+  answer(take(world, '/api/codes'), codesReport('RUN_B'));
+  await settle();
+  return {hidden, revealed, copied, finalPage, rehidden, restored,
+    reset: world.el('s1-expired').hidden, requests: world.pending.map(c => c.url)};
+};
+
 async function main() {
   const out = {};
   for (const [name, run] of Object.entries(scenarios)) out[name] = await run();

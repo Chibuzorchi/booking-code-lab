@@ -92,6 +92,7 @@ noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin
     <h3>All codes from this run</h3>
     <p class="error" id="s1-codes-error" hidden></p>
     <p class="notice" id="s1-band" hidden></p>
+    <button id="s1-expired" type="button" aria-pressed="false" hidden>Show expired codes</button>
     <fieldset id="s1-view" hidden>
       <div class="grid">
         <label>Order<span>unpriced codes sit last either way</span><select id="s1-order"><option value="asc">Lowest odds first</option><option value="desc">Highest odds first</option></select></label>
@@ -301,7 +302,7 @@ function seedHint() {
 /* How stage 2's list is being looked at. Kept with the rest of the provider's
    view, so switching away and back shows the same list, not a reset one. */
 function blankPrefs() { return {order: 'asc', min: null, max: null}; }
-function blankView() { return {run: null, codes: null, codesAsked: null, stage2: null, stage3: null, submission: null,
+function blankView() { return {run: null, codes: null, codesAsked: null, stage2: null, stage3: null, submission: null, showExpired: false,
                                error: null, prefs: blankPrefs(), codesPrefs: blankPrefs(), codesPage: 0, page: 0}; }
 
 /* Pagination is purely a slice of whatever `arrange()` already produced, so it
@@ -334,7 +335,7 @@ function clearRun() {
 }
 
 function restore() {
-  const {run, codes, codesAsked, stage2, stage3, prefs, codesPrefs} = view;
+  const {run, codes, codesAsked, stage2, stage3, prefs, codesPrefs, showExpired} = view;
   clearRun();
   clearAnalysis();
   $('s2-run').disabled = false;
@@ -349,6 +350,7 @@ function restore() {
   view.stage3 = stage3;
   view.prefs = prefs || blankPrefs();
   view.codesPrefs = codesPrefs || blankPrefs();
+  view.showExpired = Boolean(showExpired);
   writePrefs('s2', view.prefs);
   writePrefs('s1', view.codesPrefs);
   if (codes) renderCodes(codes);
@@ -594,9 +596,15 @@ function renderCodes(report) {
   $('s1-codes').hidden = false;
   $('s1-band').textContent = bandText(report);
   $('s1-band').hidden = false;
-  $('s1-view').hidden = !report.pool_size;
+  const expired = report.expired_codes || [];
+  const rows = view.showExpired ? [...report.codes, ...expired] : report.codes;
+  const expiredButton = $('s1-expired');
+  expiredButton.hidden = !expired.length;
+  expiredButton.textContent = `${view.showExpired ? 'Hide' : 'Show'} ${expired.length} expired code(s)`;
+  expiredButton.setAttribute('aria-pressed', String(Boolean(view.showExpired)));
+  $('s1-view').hidden = !rows.length;
 
-  const shown = arrange(report.codes, basis, prefs);
+  const shown = arrange(rows, basis, prefs);
   const codes = shown.rows.map(([ticket]) => bareCode(ticket));
   const state = view.run ? view.run.state : report.state;
   const lead = !report.partial
@@ -604,9 +612,13 @@ function renderCodes(report) {
     : ACTIVE.has(state)
       ? `${report.pool_size} code(s) saved so far, overlapping ones included. The scan is still running; this list grows as more are saved.`
       : `The scan stopped early (${state}). ${report.pool_size} code(s) were saved before it stopped, overlapping ones included.`;
-  const parts = report.pool_size ? [lead, ...viewNote(report.pool_size, prefs, shown)]
-    : [report.partial ? 'No codes saved yet.' : 'This run found no codes in its odds band.'];
-  if (report.excluded.length) parts.push(`${report.excluded.length} extract row(s) were excluded from the pool.`);
+  const parts = rows.length ? [lead, ...viewNote(rows.length, prefs, shown)]
+    : [expired.length ? 'No upcoming codes in this snapshot.'
+       : report.partial ? 'No codes saved yet.' : 'This run found no codes in its odds band.'];
+  if (report.saved_count !== undefined) parts.push(`${report.saved_count} code(s) saved in this snapshot.`);
+  if (expired.length) parts.push(`${expired.length} saved code(s) ${view.showExpired ? 'shown' : 'hidden'} because a match has started. Outcomes have not been checked.`);
+  const otherExcluded = report.excluded.length - expired.length;
+  if (otherExcluded > 0) parts.push(`${otherExcluded} ${expired.length ? 'other ' : ''}extract row(s) were excluded from the pool.`);
   $('s1-count').textContent = parts.join(' ');
   $('s1-bar').hidden = false;
   $('s1-copy-all').onclick = () => Copy.button($('s1-copy-all'), codes.join('\n'),
@@ -619,7 +631,8 @@ function renderCodes(report) {
   cards.replaceChildren();
   for (const [ticket] of pageRows) {
     cards.append(ticketCard(bareCode(ticket),
-      [['Legs', String(ticket.num_legs)], ['Odds', num(oddsOf(ticket, basis))]],
+      [['Legs', String(ticket.num_legs)], ['Odds', num(oddsOf(ticket, basis))],
+       ...(ticket.history_note ? [['History', ticket.history_note]] : [])],
       () => legTable(ticket.legs)));
   }
   renderPager('s1', page, totalPages, shown.rows.length);
@@ -684,6 +697,7 @@ function clearAnalysis() {               // the DOM only; the remembered reports
 function resetAnalysis() {               // the analysis is gone, not just off screen
   view.codes = null;
   view.codesAsked = null;
+  view.showExpired = false;
   view.stage2 = null;
   view.stage3 = null;
   view.prefs = blankPrefs();             // a new analysis starts unfiltered
@@ -1019,6 +1033,11 @@ function relistCodes() {
   view.codesPage = 0;
   if (view.codes) renderCodes(view.codes);
 }
+$('s1-expired').addEventListener('click', () => {
+  view.showExpired = !view.showExpired;
+  view.codesPage = 0;
+  if (view.codes) renderCodes(view.codes);
+});
 for (const id of ['s1-order', 's1-min', 's1-max']) $(id).addEventListener('input', relistCodes);
 $('s1-view-reset').addEventListener('click', () => {
   view.codesPrefs = blankPrefs();

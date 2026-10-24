@@ -364,6 +364,22 @@ class ConsoleStateTests(unittest.TestCase):
         self.assertEqual(seen['banded']['shown'], seen['beside_stage2']['s1'])
         self.assertEqual(6, len(seen['reset']['shown']))
 
+    def test_expired_history_can_be_revealed_copied_and_hidden(self):
+        seen = self.seen['expired_history']
+        self.assertEqual(seen['hidden']['cards'], 0)
+        self.assertTrue(seen['hidden']['available'])
+        self.assertIn('26 saved code(s) hidden', seen['hidden']['note'])
+        self.assertEqual(seen['revealed']['cards'], 25)
+        self.assertEqual(seen['revealed']['page'], 'Page 1 of 2 (25 per page)')
+        self.assertIn('outcome not checked', seen['revealed']['label'])
+        self.assertEqual(seen['revealed']['pressed'], 'true')
+        self.assertEqual(seen['copied'], 26)
+        self.assertEqual(seen['finalPage'], 1)
+        self.assertEqual(seen['rehidden'], 0)
+        self.assertEqual(seen['restored'], 'true')
+        self.assertTrue(seen['reset'])
+        self.assertFalse(any('/api/distinct' in r or '/api/decorrelate' in r for r in seen['requests']))
+
     def test_all_codes_list_follows_its_provider_and_its_run(self):
         seen = self.seen['all_codes']
         # The other provider shows none of it; coming back repaints without refetching.

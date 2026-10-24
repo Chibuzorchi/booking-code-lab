@@ -55,6 +55,12 @@ supplied using `--positions`. Historical `available` flags are not live checks.
 The CLI does not fetch codes, book tickets, or place bets. Changing filters cannot
 recover candidates discarded by a previous harvest.
 
+In the scan console, Stage 1's **Show expired codes** button reveals historical
+saved tickets hidden because a match has started. Counts distinguish saved rows,
+upcoming eligible tickets, and expired tickets. Revealed tickets retain their
+original selections and can be copied; their outcomes have not yet been checked.
+Distinct and exposure analyses continue to use the eligible pool.
+
 Each refresh is a new invocation with a new output directory. Existing directories
 are refused. A run without `manifest.json` is incomplete and must not be used. Re-run
 against a run's `inputs/` and effective policy to reproduce membership and comparison;
