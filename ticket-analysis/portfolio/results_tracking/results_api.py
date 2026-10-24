@@ -468,8 +468,14 @@ def list_codes(config: ResultsApiConfig, run_id: str, revision_id: str, *,
             "rows": tickets[offset:offset + limit]}
 
 
-def _default_client_factory() -> ApiFootballClient:
-    return ApiFootballClient()
+def _default_client_factory(config: ResultsApiConfig) -> Callable[[], object]:
+    """Binds the configured per-call timeout into the default client's own
+    transport timeout, so the two are not two independent clocks
+    (F9_STEP5_REVIEW.md S5-08): config.per_call_timeout already bounds how
+    long run_result_job waits on one fetch_one attempt, and this makes the
+    client's own HTTP request time out at the same budget rather than its
+    unrelated 10-second default."""
+    return lambda: ApiFootballClient(timeout_s=config.per_call_timeout)
 
 
 # A server restart kills every background worker thread but not the
@@ -506,13 +512,19 @@ def _reclaim_if_abandoned(job_store: JobStore, job: JobRecord) -> JobRecord:
 
 def submit_evaluation(registry, config: ResultsApiConfig, job_store: JobStore, run_id: str, *,
                        refresh: bool = False, allow_partial: bool = False,
-                       client_factory: Callable[[], object] = _default_client_factory):
+                       client_factory: Callable[[], object] | None = None):
     """Starts (or returns the existing active job for) one evaluation of
     run_id. Never blocks on fetching/evaluating/publishing -- the real work
     runs on a background thread; this returns as soon as the job record
     exists. `refresh` is accepted for the API contract but delegates to
     cache.py's own staleness policy rather than forcing a refetch: every
-    fetch_one call already re-checks staleness itself."""
+    fetch_one call already re-checks staleness itself.
+
+    client_factory defaults to a real ApiFootballClient bound to this
+    config's per_call_timeout (S5-08) -- left None rather than defaulted at
+    def-time so it can see the config this call actually received."""
+    if client_factory is None:
+        client_factory = _default_client_factory(config)
     provider, input_digest, rows = load_population(registry, run_id)
     config_digest = compute_config_digest(config)
     outer = job_store.create_or_reuse(run_id, input_digest, config_digest)

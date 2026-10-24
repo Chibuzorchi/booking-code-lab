@@ -100,6 +100,10 @@ class _BudgetExhaustedError(RuntimeError):
     """Internal signal: the per-job request budget has no attempts left."""
 
 
+class _CancelledTaskError(RuntimeError):
+    """Internal signal: cancellation was observed before a retry attempt."""
+
+
 @contextmanager
 def _flock_path(path: Path):
     """Exclusive flock on path, serializing access across processes.
@@ -306,9 +310,15 @@ class _Budget:
 
 
 def _attempt_task(task: Task, fetch_one: Callable[[Task], Any], budget: _Budget,
-                   max_retries: int) -> Any:
+                   max_retries: int, cancel_check: Callable[[], bool]) -> Any:
     last_exc: Exception | None = None
-    for _ in range(max_retries + 1):
+    for attempt in range(max_retries + 1):
+        if attempt > 0 and cancel_check():
+            # A cancellation observed between retries stops this task from
+            # issuing another call -- the attempt already in flight when
+            # cancellation lands is still allowed to finish, but no new one
+            # starts on its behalf (F9_STEP5_REVIEW.md S5-08).
+            raise _CancelledTaskError()
         if not budget.try_consume():
             raise _BudgetExhaustedError()
         try:
@@ -345,8 +355,18 @@ def run_result_job(store: JobStore, job_id: str, tasks: Sequence[Task],
     cancelled = False
     fatal_error: FatalTaskError | None = None
 
+    def _cancel_check() -> bool:
+        return store.get(job_id).cancel_requested
+
     index = 0
-    with ThreadPoolExecutor(max_workers=budget.max_workers) as pool:
+    # shutdown(wait=False) on exit, not the `with` form's wait=True: a
+    # timed-out future's thread is abandoned (per this module's own
+    # docstring above), but ThreadPoolExecutor.__exit__ otherwise blocks
+    # the runner itself on that thread's completion regardless of
+    # per_call_timeout, which contradicts "abandoned, not killed"
+    # (F9_STEP5_REVIEW.md S5-08).
+    pool = ThreadPoolExecutor(max_workers=budget.max_workers)
+    try:
         while index < len(pending):
             if store.get(job_id).cancel_requested:
                 cancelled = True
@@ -354,7 +374,8 @@ def run_result_job(store: JobStore, job_id: str, tasks: Sequence[Task],
             chunk = pending[index:index + budget.max_workers]
             index += len(chunk)
             futures = {
-                pool.submit(_attempt_task, task, fetch_one, budget_counter, budget.max_retries): task
+                pool.submit(_attempt_task, task, fetch_one, budget_counter,
+                            budget.max_retries, _cancel_check): task
                 for task in chunk
             }
             for future, task in futures.items():
@@ -364,10 +385,11 @@ def run_result_job(store: JobStore, job_id: str, tasks: Sequence[Task],
                     fatal_error = fatal_error or exc
                     continue
                 except Exception:
-                    # Timeout, budget exhaustion, or retries exhausted: this
-                    # task stays incomplete, but siblings in the same chunk
-                    # still get to finish and be recorded (evidence already
-                    # fetched is preserved even when one task fails fatally).
+                    # Timeout, cancellation, budget exhaustion, or retries
+                    # exhausted: this task stays incomplete, but siblings in
+                    # the same chunk still get to finish and be recorded
+                    # (evidence already fetched is preserved even when one
+                    # task fails fatally).
                     continue
                 else:
                     results[task.key] = result
@@ -378,6 +400,8 @@ def run_result_job(store: JobStore, job_id: str, tasks: Sequence[Task],
                     ))
             if fatal_error is not None:
                 break
+    finally:
+        pool.shutdown(wait=False)
 
     incomplete = tuple(task.key for task in pending if task.key not in completed_keys)
 

@@ -18,7 +18,8 @@ from portfolio.results_tracking.jobs import JobState, JobStore
 from portfolio.results_tracking.results_api import (
     _ABANDONED_JOB_AFTER_SECONDS,
     ReportNotFoundError, ResultsApiConfig, ResultsApiError, _build_audit_rows,
-    _commit_publication, _dates_needed, _fixture_to_evidence_dict, _ticket_to_evidence, cancel_job,
+    _commit_publication, _dates_needed, _default_client_factory, _fixture_to_evidence_dict,
+    _ticket_to_evidence, cancel_job,
     compute_config_digest, get_latest_report, list_codes, load_identity_evidence,
     load_population, publish_revision, submit_evaluation,
 )
@@ -581,6 +582,16 @@ class CommitPublicationTests(unittest.TestCase):
             self.assertEqual(record.state, JobState.CANCELLED)
             # The published revision is still recorded, not discarded.
             self.assertEqual(record.result, {"revision_id": "r1"})
+
+
+class DefaultClientFactoryTests(unittest.TestCase):
+    def test_binds_the_configured_per_call_timeout_into_the_real_client(self):
+        # S5-08: the default client previously kept its own independent
+        # 10-second transport timeout regardless of config.per_call_timeout.
+        with mock.patch.dict("os.environ", {"API_FOOTBALL_KEY": "test-key"}):
+            config = ResultsApiConfig(root=Path("/unused"), per_call_timeout=3.5)
+            client = _default_client_factory(config)()
+            self.assertEqual(client.timeout_s, 3.5)
 
 
 class CancelJobTests(unittest.TestCase):

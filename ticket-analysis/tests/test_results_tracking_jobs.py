@@ -3,6 +3,8 @@
 Pure filesystem/in-process tests against a throwaway TemporaryDirectory; no
 network, no real source adapter needed. fetch_one is a plain test double.
 """
+import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -218,6 +220,61 @@ class RunResultJobTests(unittest.TestCase):
             self.assertTrue(outcome.cancelled)
             self.assertEqual(outcome.results, {})
             self.assertEqual(store.get(record.job_id).state, JobState.CANCELLED)
+
+    def test_a_blocked_worker_does_not_hold_up_the_runner_past_its_timeout(self):
+        # S5-08 repro: a fetch blocked indefinitely behind an unset Event,
+        # with a tiny per_call_timeout, used to leave the runner (not just
+        # future.result()) blocked past that timeout -- because leaving
+        # ThreadPoolExecutor's `with` block waits for every submitted
+        # thread regardless of whether its result was already given up on.
+        # The worker is abandoned (never released), so a strict wait=True
+        # shutdown would hang this test forever if the fix regressed.
+        with TemporaryDirectory() as tmp:
+            store = _store(tmp)
+            record = store.create_or_reuse("run-1", "input-a", "config-a")
+            blocker = threading.Event()
+            # concurrent.futures.thread registers an atexit hook that joins
+            # every worker thread at interpreter shutdown, with no timeout,
+            # regardless of this test's own shutdown(wait=False) fix -- so
+            # the abandoned worker must still be released before the test
+            # process exits, or the whole run hangs forever.
+            self.addCleanup(blocker.set)
+
+            def fetch_one(task):
+                blocker.wait()  # released only by the cleanup above
+                return "unreachable"
+
+            started = time.monotonic()
+            outcome = run_result_job(
+                store, record.job_id, [Task(key="t0")], fetch_one=fetch_one,
+                budget=JobBudget(max_requests=1, max_retries=0, per_call_timeout=0.02),
+            )
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 0.15)
+            self.assertEqual(outcome.incomplete_task_keys, ("t0",))
+            self.assertEqual(store.get(record.job_id).state, JobState.FAILED)
+
+    def test_cancellation_is_observed_before_a_retry_but_not_mid_attempt(self):
+        # A task already in flight when cancellation lands is left to
+        # finish (its result, if any, is still recorded); only the next
+        # retry attempt is refused (S5-08).
+        with TemporaryDirectory() as tmp:
+            store = _store(tmp)
+            record = store.create_or_reuse("run-1", "input-a", "config-a")
+            attempts = {"count": 0}
+
+            def fetch_one(task):
+                attempts["count"] += 1
+                if attempts["count"] == 1:
+                    store.request_cancel(record.job_id)
+                raise RuntimeError("always fails")
+
+            outcome = run_result_job(
+                store, record.job_id, [Task(key="t0")], fetch_one=fetch_one,
+                budget=JobBudget(max_requests=10, max_retries=5, max_workers=1),
+            )
+            self.assertEqual(attempts["count"], 1)
+            self.assertEqual(outcome.incomplete_task_keys, ("t0",))
 
 
 if __name__ == "__main__":
