@@ -44,6 +44,19 @@ class FootballDataImport:
     fixtures: tuple[FootballDataFixture, ...]
 
 
+def _required_field(row: dict, name: str, row_number: int) -> str:
+    """csv.DictReader pads a row shorter than the header with None for the
+    trailing columns; a bare row[name] would then crash with AttributeError
+    on the first .strip() call instead of raising the documented import
+    error."""
+    value = row.get(name)
+    if value is None:
+        raise FootballDataImportError(
+            f"row {row_number}: missing value for required column {name!r} "
+            "(row is shorter than the header)")
+    return value
+
+
 def _parse_date(raw: str, row_number: int) -> date:
     parts = raw.strip().split("/")
     if len(parts) != 3:
@@ -95,18 +108,18 @@ def import_football_data_csv(path: Path, *, division: str, season: str,
     for row_number, row in enumerate(reader, start=2):  # header is row 1
         if not any((row.get(c) or "").strip() for c in REQUIRED_COLUMNS):
             continue  # blank trailing line
-        match_date = _parse_date(row["Date"], row_number)
-        home_team = row["HomeTeam"].strip()
-        away_team = row["AwayTeam"].strip()
+        match_date = _parse_date(_required_field(row, "Date", row_number), row_number)
+        home_team = _required_field(row, "HomeTeam", row_number).strip()
+        away_team = _required_field(row, "AwayTeam", row_number).strip()
         if not home_team or not away_team:
             raise FootballDataImportError(f"row {row_number}: missing HomeTeam/AwayTeam")
-        ft_home = _parse_goal_count(row["FTHG"], "FTHG", row_number)
-        ft_away = _parse_goal_count(row["FTAG"], "FTAG", row_number)
+        ft_home = _parse_goal_count(_required_field(row, "FTHG", row_number), "FTHG", row_number)
+        ft_away = _parse_goal_count(_required_field(row, "FTAG", row_number), "FTAG", row_number)
         if (ft_home is None) != (ft_away is None):
             raise FootballDataImportError(
                 f"row {row_number}: FTHG and FTAG must both be known or both be blank")
-        ht_home = _parse_goal_count(row.get("HTHG", ""), "HTHG", row_number)
-        ht_away = _parse_goal_count(row.get("HTAG", ""), "HTAG", row_number)
+        ht_home = _parse_goal_count(row.get("HTHG") or "", "HTHG", row_number)
+        ht_away = _parse_goal_count(row.get("HTAG") or "", "HTAG", row_number)
 
         score = None
         if ft_home is not None:
@@ -114,12 +127,14 @@ def import_football_data_csv(path: Path, *, division: str, season: str,
                 score = RegulationScore(ft_home, ft_away, ht_home, ht_away)
             except InvalidScoreError as exc:
                 raise FootballDataImportError(f"row {row_number}: {exc}") from exc
-        elif ht_home is not None:
+        elif ht_home is not None or ht_away is not None:
+            # R08: an away-only (or home-only) half-time score without a
+            # full-time score is just as unresolvable as a paired one.
             raise FootballDataImportError(
                 f"row {row_number}: half-time score present without a full-time score")
 
         fixtures.append(FootballDataFixture(
-            division=row["Div"].strip(), date=match_date,
+            division=_required_field(row, "Div", row_number).strip(), date=match_date,
             home_team=home_team, away_team=away_team, score=score))
 
     return FootballDataImport(

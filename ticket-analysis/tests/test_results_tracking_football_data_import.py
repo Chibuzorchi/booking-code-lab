@@ -64,6 +64,19 @@ class FootballDataImportTests(unittest.TestCase):
         with self.assertRaises(FootballDataImportError):
             import_football_data_csv(path, division="E0", season="2026-27", downloaded_at="x")
 
+    def test_away_only_half_time_without_full_time_raises(self):
+        # F9_IMPLEMENTATION_REVIEW.md R08: the no-FT branch must check both
+        # HT fields independently, not just HTHG.
+        path = self._write("ht_away_only.csv", "E0,15/08/2026,Arsenal,Everton,,,,,1,H\n")
+        with self.assertRaises(FootballDataImportError):
+            import_football_data_csv(path, division="E0", season="2026-27", downloaded_at="x")
+
+    def test_row_shorter_than_header_raises_not_attributeerror(self):
+        path = self.dir / "short_row.csv"
+        path.write_text(HEADER + "E0,15/08/2026,Arsenal\n", encoding="utf-8")
+        with self.assertRaises(FootballDataImportError):
+            import_football_data_csv(path, division="E0", season="2026-27", downloaded_at="x")
+
     def test_half_time_exceeding_full_time_raises(self):
         path = self._write("bad_half.csv", "E0,15/08/2026,Arsenal,Everton,1,1,D,2,0,H\n")
         with self.assertRaises(FootballDataImportError):
