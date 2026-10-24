@@ -22,6 +22,11 @@ football fixture by construction; sport gating for a ticket leg already
 happens in rules/registry.classify(), which is where a genuinely
 non-football leg is rejected.
 
+Two individually plausible but contradictory VerifiedMapping entries for the
+same provider event (different targets, opposing scores) are rejected by
+validate_verified_mappings() before any of them is used, for the same reason
+conflicting aliases/fixture observations are (F9_STEP4_REREVIEW.md S4R-02).
+
 Reversed source orientation (a source disagreeing on which side is home) is
 NOT modeled or transformed anywhere in this module -- neither tier 1's
 VerifiedMapping nor tier 2's exact check carries an orientation flip. A
@@ -76,16 +81,21 @@ class VerifiedMapping:
     (tier 1). Records the exact display strings seen at verification time on
     *both* sides -- the provider's own (league_display/home_display/
     away_display) and the source's own (source_competition/
-    source_home_team/source_away_team) -- so a later call can re-check both
-    the provider selection *and* the current target fixture's own recorded
-    facts against what was true at verification time, rather than trusting
-    the provider_event_id (for the provider side) or the (source,
-    source_fixture_id) key (for the target side) forever. A changed league/
-    team display on either side fails the recheck instead of silently
-    matching (F9_STEP4_REVIEW.md S4-01). The source-side fields are compared
-    by exact string equality against the fixture's own home_team/away_team/
-    competition -- not through the alias table -- so tier 1 keeps working
-    without requiring any aliases to be registered."""
+    source_home_team/source_away_team/source_kickoff_raw) -- so a later call
+    can re-check both the provider selection *and* the current target
+    fixture's own recorded facts against what was true at verification time,
+    rather than trusting the provider_event_id (for the provider side) or the
+    (source, source_fixture_id) key (for the target side) forever. A changed
+    league/team display, or a changed kickoff, on either side fails the
+    recheck instead of silently matching (F9_STEP4_REVIEW.md S4-01,
+    F9_STEP4_REREVIEW.md S4R-01) -- a fixture's kickoff can legitimately
+    change (a postponement), but that is a deliberate mapping revision
+    (re-verifying with the new source_kickoff_raw), never a reason to accept
+    an unrelated date under an unchanged source id. The source-side fields
+    are compared by exact string equality against the fixture's own
+    home_team/away_team/competition/kickoff.raw -- not through the alias
+    table -- so tier 1 keeps working without requiring any aliases to be
+    registered."""
     provider: str
     provider_event_id: str
     league_display: str
@@ -96,6 +106,7 @@ class VerifiedMapping:
     source_competition: str
     source_home_team: str
     source_away_team: str
+    source_kickoff_raw: str
     verified_at: str
     evidence: str
 
@@ -139,6 +150,24 @@ def validate_aliases(aliases: Sequence[Alias]) -> None:
                 f"conflicting aliases for namespace={key[0]!r} display_name={key[1]!r}: "
                 f"{seen[key]!r} vs {alias.canonical!r}")
         seen[key] = alias.canonical
+
+
+def validate_verified_mappings(verified_mappings: Sequence[VerifiedMapping]) -> None:
+    """Rejects two VerifiedMapping entries for the same (provider,
+    provider_event_id) that disagree on their target -- two individually
+    plausible mappings pointing at opposing results for the same provider
+    event must be reported as a conflict, never silently resolved by
+    whichever one happens to come first in the list
+    (F9_STEP4_REREVIEW.md S4R-02). Exact duplicate entries are not a
+    conflict."""
+    seen: dict[tuple[str, str], VerifiedMapping] = {}
+    for mapping in verified_mappings:
+        key = (mapping.provider, mapping.provider_event_id)
+        if key in seen and seen[key] != mapping:
+            raise MatchingError(
+                f"conflicting verified mappings for provider={key[0]!r} "
+                f"provider_event_id={key[1]!r}: {seen[key]!r} vs {mapping!r}")
+        seen[key] = mapping
 
 
 def validate_candidate_fixtures(candidate_fixtures: Sequence[Fixture]) -> None:
@@ -231,6 +260,7 @@ def match_selection_event(
     recheck or tier 2's unique-exact-match path."""
     validate_aliases(aliases)
     validate_candidate_fixtures(candidate_fixtures)
+    validate_verified_mappings(verified_mappings)
     home_display, away_display = split_event_display(event_display)
 
     if provider_event_id:
@@ -260,7 +290,8 @@ def match_selection_event(
             # (F9_STEP4_REVIEW.md S4-01).
             if (fixture.competition != mapping.source_competition
                     or fixture.home_team != mapping.source_home_team
-                    or fixture.away_team != mapping.source_away_team):
+                    or fixture.away_team != mapping.source_away_team
+                    or fixture.kickoff.raw != mapping.source_kickoff_raw):
                 return MatchDecision(MatchStatus.UNMATCHED, None, (), "verified_mapping",
                                       "verified_mapping_target_fixture_changed")
             return MatchDecision(

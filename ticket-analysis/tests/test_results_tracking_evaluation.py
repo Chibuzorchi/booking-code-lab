@@ -4,7 +4,7 @@ resolve -> evaluate). Pure/offline -- no network, no run directories.
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from portfolio.results_tracking.evaluation import evaluate_selection
+from portfolio.results_tracking.evaluation import evaluate_selection, evaluate_selection_detailed
 from portfolio.results_tracking.fixtures import Fixture, FixtureProvenance, FixtureState, KickoffTime
 from portfolio.results_tracking.matching import Alias, MatchingError, VerifiedMapping
 from portfolio.results_tracking.reporting import Outcome
@@ -50,6 +50,25 @@ class UnsupportedMarketTests(unittest.TestCase):
         self.assertEqual(outcome.status, Outcome.UNRESOLVED)
         self.assertEqual(outcome.reason, "unsupported_market")
 
+    def test_unsupported_sport_with_unparseable_event_display_never_attempts_matching(self):
+        # F9_STEP4_REREVIEW.md S4R-06 reproduction: a Tennis leg (unsupported
+        # sport) whose event_display isn't a "Team - Team" string must stay
+        # an explicit unresolved row. evaluate_selection_detailed() must not
+        # attempt matching for it (a real match attempt would raise
+        # MatchingError trying to split "not a team fixture"), and must
+        # report decision=None ("not attempted"), not a failed decision.
+        outcome, decision = evaluate_selection_detailed(**_leg(
+            sport="Tennis", event_display="not a team fixture",
+            candidate_fixtures=(_fixture(),)))
+        self.assertEqual(outcome.status, Outcome.UNRESOLVED)
+        self.assertEqual(outcome.reason, "unsupported_sport")
+        self.assertIsNone(decision)
+
+    def test_supported_leg_returns_its_match_decision(self):
+        fixture = _fixture()
+        outcome, decision = evaluate_selection_detailed(**_leg(candidate_fixtures=(fixture,)))
+        self.assertIsNotNone(decision)
+
 
 class MatchingTests(unittest.TestCase):
     def test_no_candidate_fixtures_is_unresolved_fixture_not_matched(self):
@@ -79,6 +98,7 @@ class MatchingTests(unittest.TestCase):
                                    away_display="Everton", source="api_football",
                                    source_fixture_id="1", source_competition="Premier League",
                                    source_home_team="Arsenal", source_away_team="Everton",
+                                   source_kickoff_raw="2026-10-24",
                                    verified_at="2026-10-23T00:00:00Z", evidence="manual")
         outcome = evaluate_selection(**_leg(provider_event_id="evt-1", candidate_fixtures=(fx,),
                                              verified_mappings=(mapping,)))

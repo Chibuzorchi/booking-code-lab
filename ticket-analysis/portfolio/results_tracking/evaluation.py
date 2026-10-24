@@ -16,7 +16,9 @@ from __future__ import annotations
 from typing import Sequence
 
 from .fixtures import Fixture, FixtureState
-from .matching import Alias, MatchStatus, VerifiedMapping, match_selection_event, resolve_alias
+from .matching import (
+    Alias, MatchDecision, MatchStatus, VerifiedMapping, match_selection_event, resolve_alias,
+)
 from .reporting import LegOutcome, Outcome
 from .rules import registry
 
@@ -107,20 +109,56 @@ def _resolve_side(market: str, provider: str, rule_id: str, fixture: Fixture,
     return None, "invalid_input"
 
 
-def match_decision_for_leg(
-    *, provider: str, provider_event_id: str | None, event_display: str, league_display: str,
-    kickoff, candidate_fixtures: Sequence[Fixture], aliases: Sequence[Alias] = (),
+def evaluate_selection_detailed(
+    *, leg_id: str, provider: str, provider_event_id: str | None, event_display: str,
+    league_display: str, sport: str, market: str, pick: str, specifier: str, kickoff,
+    candidate_fixtures: Sequence[Fixture], aliases: Sequence[Alias] = (),
     verified_mappings: Sequence[VerifiedMapping] = (),
-):
-    """Exposes the same MatchDecision evaluate_selection() computes
-    internally, for a caller (the evaluate CLI's report) that needs to
-    retain which fixture a leg actually matched -- source and
-    source_fixture_id -- for independent replay (F9_STEP4_REVIEW.md S4-04).
-    Deliberately a thin wrapper, not a second matching implementation."""
-    return match_selection_event(
+) -> tuple[LegOutcome, MatchDecision | None]:
+    """Resolve one ticket leg to a LegOutcome, or explain why it can't be
+    resolved yet. Order mirrors section 6's named concerns: market/sport
+    support, then fixture matching, then fixture state/completeness, then
+    side-resolution, then the rule itself.
+
+    Also returns the MatchDecision that was (or, for an unsupported
+    sport/market, was never) computed along the way, so a caller that wants
+    matching provenance for its report (source/source_fixture_id,
+    F9_STEP4_REVIEW.md S4-04) can read it off this single pass instead of
+    invoking match_selection_event() a second, ungated time -- a second call
+    would attempt matching even for legs this function itself never attempts
+    it for, which previously let an unsupported leg's unparseable
+    event_display raise MatchingError and abort the whole evaluation
+    (F9_STEP4_REREVIEW.md S4R-06). None here always means "not attempted",
+    never "attempted and failed"."""
+    classification = registry.classify(market, sport)
+    if classification.status == "unsupported":
+        return LegOutcome(leg_id, Outcome.UNRESOLVED, None, classification.reason), None
+    rule_id = classification.rule_id
+
+    decision = match_selection_event(
         provider=provider, provider_event_id=provider_event_id, event_display=event_display,
         league_display=league_display, kickoff=kickoff, candidate_fixtures=candidate_fixtures,
         aliases=aliases, verified_mappings=verified_mappings)
+    if decision.status == MatchStatus.AMBIGUOUS:
+        return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, "ambiguous_fixture"), decision
+    if decision.status == MatchStatus.UNMATCHED:
+        return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, "fixture_not_matched"), decision
+    fixture = decision.fixture
+
+    if fixture.state in _PENDING_STATES:
+        return LegOutcome(leg_id, Outcome.PENDING, rule_id, "result_not_yet_available"), decision
+    if not fixture.is_finished:
+        return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, _TERMINAL_STATE_REASONS[fixture.state]), decision
+    if fixture.regulation_score is None:
+        return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, "missing_period"), decision
+
+    side, side_reason = _resolve_side(market, provider, rule_id, fixture, aliases)
+    if side_reason is not None:
+        return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, side_reason), decision
+
+    outcome_str, reason = _EVALUATOR_CALLS[rule_id](
+        classification.evaluator, pick, specifier, fixture.regulation_score, side)
+    return LegOutcome(leg_id, Outcome(outcome_str), rule_id, reason), decision
 
 
 def evaluate_selection(
@@ -129,36 +167,11 @@ def evaluate_selection(
     candidate_fixtures: Sequence[Fixture], aliases: Sequence[Alias] = (),
     verified_mappings: Sequence[VerifiedMapping] = (),
 ) -> LegOutcome:
-    """Resolve one ticket leg to a LegOutcome, or explain why it can't be
-    resolved yet. Order mirrors section 6's named concerns: market/sport
-    support, then fixture matching, then fixture state/completeness, then
-    side-resolution, then the rule itself."""
-    classification = registry.classify(market, sport)
-    if classification.status == "unsupported":
-        return LegOutcome(leg_id, Outcome.UNRESOLVED, None, classification.reason)
-    rule_id = classification.rule_id
-
-    decision = match_selection_event(
-        provider=provider, provider_event_id=provider_event_id, event_display=event_display,
-        league_display=league_display, kickoff=kickoff, candidate_fixtures=candidate_fixtures,
+    """Convenience wrapper over evaluate_selection_detailed() for callers that
+    don't need matching provenance."""
+    leg_outcome, _decision = evaluate_selection_detailed(
+        leg_id=leg_id, provider=provider, provider_event_id=provider_event_id,
+        event_display=event_display, league_display=league_display, sport=sport, market=market,
+        pick=pick, specifier=specifier, kickoff=kickoff, candidate_fixtures=candidate_fixtures,
         aliases=aliases, verified_mappings=verified_mappings)
-    if decision.status == MatchStatus.AMBIGUOUS:
-        return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, "ambiguous_fixture")
-    if decision.status == MatchStatus.UNMATCHED:
-        return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, "fixture_not_matched")
-    fixture = decision.fixture
-
-    if fixture.state in _PENDING_STATES:
-        return LegOutcome(leg_id, Outcome.PENDING, rule_id, "result_not_yet_available")
-    if not fixture.is_finished:
-        return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, _TERMINAL_STATE_REASONS[fixture.state])
-    if fixture.regulation_score is None:
-        return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, "missing_period")
-
-    side, side_reason = _resolve_side(market, provider, rule_id, fixture, aliases)
-    if side_reason is not None:
-        return LegOutcome(leg_id, Outcome.UNRESOLVED, rule_id, side_reason)
-
-    outcome_str, reason = _EVALUATOR_CALLS[rule_id](
-        classification.evaluator, pick, specifier, fixture.regulation_score, side)
-    return LegOutcome(leg_id, Outcome(outcome_str), rule_id, reason)
+    return leg_outcome

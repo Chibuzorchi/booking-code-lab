@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..registry import RunRegistry, RunNotFoundError, RunStateError
-from .evaluation import evaluate_selection, match_decision_for_leg
+from .evaluation import evaluate_selection_detailed
 from .fixtures import Fixture, FixtureProvenance, FixtureState, InvalidFixtureError, KickoffTime
 from .inputs import PopulationAuditError, audit_run
 from .matching import Alias, MatchingError, VerifiedMapping
@@ -55,11 +55,23 @@ def _require_list(value, context):
     return value
 
 
+def _require_str(value, context):
+    if not isinstance(value, str):
+        raise EvaluationInputError(f"{context}: expected a string, got {type(value).__name__}")
+    return value
+
+
+def _get_str(container, key, context):
+    return _require_str(_get(container, key, context), f"{context}.{key}")
+
+
 def _parse_kickoff(payload, context):
     payload = _require_dict(payload, context)
     utc_raw = payload.get("utc")
+    if utc_raw is not None:
+        _require_str(utc_raw, f"{context}.utc")
     utc = datetime.fromisoformat(utc_raw) if utc_raw else None
-    return KickoffTime(raw=_get(payload, "raw", context), precision=_get(payload, "precision", context),
+    return KickoffTime(raw=_get_str(payload, "raw", context), precision=_get_str(payload, "precision", context),
                         utc=utc, timezone_evidence=payload.get("timezone_evidence"))
 
 
@@ -76,51 +88,62 @@ def _parse_fixture(payload, index):
     payload = _require_dict(payload, context)
     provenance_payload = _get(payload, "provenance", context)
     provenance = FixtureProvenance(
-        source=_get(provenance_payload, "source", context),
-        source_fixture_id=_get(provenance_payload, "source_fixture_id", context),
-        fetched_at=_get(provenance_payload, "fetched_at", context),
-        content_sha256=_get(provenance_payload, "content_sha256", context))
+        source=_get_str(provenance_payload, "source", context),
+        source_fixture_id=_get_str(provenance_payload, "source_fixture_id", context),
+        fetched_at=_get_str(provenance_payload, "fetched_at", context),
+        content_sha256=_get_str(provenance_payload, "content_sha256", context))
+    season = payload.get("season")
+    if season is not None:
+        _require_str(season, f"{context}.season")
     return Fixture(
-        provenance=provenance, competition=_get(payload, "competition", context),
-        season=payload.get("season"), home_team=_get(payload, "home_team", context),
-        away_team=_get(payload, "away_team", context),
+        provenance=provenance, competition=_get_str(payload, "competition", context),
+        season=season, home_team=_get_str(payload, "home_team", context),
+        away_team=_get_str(payload, "away_team", context),
         kickoff=_parse_kickoff(_get(payload, "kickoff", context), context),
-        state=FixtureState(_get(payload, "state", context)),
+        state=FixtureState(_get_str(payload, "state", context)),
         regulation_score=_parse_regulation_score(payload.get("regulation_score"), context))
 
 
 def _parse_alias(payload, index):
     context = f"aliases[{index}]"
     payload = _require_dict(payload, context)
-    return Alias(namespace=_get(payload, "namespace", context),
-                 display_name=_get(payload, "display_name", context),
-                 canonical=_get(payload, "canonical", context))
+    return Alias(namespace=_get_str(payload, "namespace", context),
+                 display_name=_get_str(payload, "display_name", context),
+                 canonical=_get_str(payload, "canonical", context))
 
 
 def _parse_verified_mapping(payload, index):
     context = f"verified_mappings[{index}]"
     payload = _require_dict(payload, context)
     return VerifiedMapping(
-        provider=_get(payload, "provider", context), provider_event_id=_get(payload, "provider_event_id", context),
-        league_display=_get(payload, "league_display", context), home_display=_get(payload, "home_display", context),
-        away_display=_get(payload, "away_display", context), source=_get(payload, "source", context),
-        source_fixture_id=_get(payload, "source_fixture_id", context),
-        source_competition=_get(payload, "source_competition", context),
-        source_home_team=_get(payload, "source_home_team", context),
-        source_away_team=_get(payload, "source_away_team", context),
-        verified_at=_get(payload, "verified_at", context), evidence=_get(payload, "evidence", context))
+        provider=_get_str(payload, "provider", context),
+        provider_event_id=_get_str(payload, "provider_event_id", context),
+        league_display=_get_str(payload, "league_display", context),
+        home_display=_get_str(payload, "home_display", context),
+        away_display=_get_str(payload, "away_display", context), source=_get_str(payload, "source", context),
+        source_fixture_id=_get_str(payload, "source_fixture_id", context),
+        source_competition=_get_str(payload, "source_competition", context),
+        source_home_team=_get_str(payload, "source_home_team", context),
+        source_away_team=_get_str(payload, "source_away_team", context),
+        source_kickoff_raw=_get_str(payload, "source_kickoff_raw", context),
+        verified_at=_get_str(payload, "verified_at", context), evidence=_get_str(payload, "evidence", context))
 
 
 def _parse_leg(payload, ticket_index, leg_index):
     context = f"tickets[{ticket_index}].legs[{leg_index}]"
     payload = _require_dict(payload, context)
+    provider_event_id = payload.get("provider_event_id")
+    if provider_event_id is not None:
+        _require_str(provider_event_id, f"{context}.provider_event_id")
+    specifier = payload.get("specifier", "")
+    _require_str(specifier, f"{context}.specifier")
     return dict(
-        leg_id=_get(payload, "leg_id", context), provider=_get(payload, "provider", context),
-        provider_event_id=payload.get("provider_event_id"),
-        event_display=_get(payload, "event_display", context),
-        league_display=_get(payload, "league_display", context), sport=_get(payload, "sport", context),
-        market=_get(payload, "market", context), pick=_get(payload, "pick", context),
-        specifier=payload.get("specifier", ""),
+        leg_id=_get_str(payload, "leg_id", context), provider=_get_str(payload, "provider", context),
+        provider_event_id=provider_event_id,
+        event_display=_get_str(payload, "event_display", context),
+        league_display=_get_str(payload, "league_display", context), sport=_get_str(payload, "sport", context),
+        market=_get_str(payload, "market", context), pick=_get_str(payload, "pick", context),
+        specifier=specifier,
         kickoff=_parse_kickoff(_get(payload, "kickoff", context), context))
 
 
@@ -131,16 +154,24 @@ def _serialize_rate(rate: Rate):
 
 def _load_audited_population(audit_dir: Path) -> dict:
     """Reads a prior `audit` command's output directory and returns
-    row_id -> {run_id, code, num_legs, num_selections} for every retained
-    ticket row across every run it inventoried. Verifies every manifested
-    file's hash first, so a changed/corrupted audit artifact is rejected
-    rather than silently trusted (F9_STEP4_REVIEW.md S4-03)."""
+    row_id -> {run_id, code, num_legs, num_selections, provider,
+    original_selections} for every retained ticket row across every run it
+    inventoried. Verifies every manifested file's hash first, so a
+    changed/corrupted audit artifact is rejected rather than silently
+    trusted (F9_STEP4_REVIEW.md S4-03).
+
+    original_selections/provider are read from the run's preserved extract
+    (not just the run report's row metadata), so a later caller can bind a
+    supplied row_id to what the audited ticket actually said -- not merely
+    that the row_id exists in the population -- and reject a row_id reused
+    against unrelated ticket content (F9_STEP4_REREVIEW.md S4R-03)."""
     manifest_path = audit_dir / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except OSError as error:
         raise EvaluationInputError(f"--audit-dir {audit_dir}: cannot read manifest.json: {error}")
-    for rel_path, expected_sha256 in _require_dict(manifest, "audit manifest").get("files", {}).items():
+    manifested_files = _require_dict(manifest, "audit manifest").get("files", {})
+    for rel_path, expected_sha256 in manifested_files.items():
         actual_path = audit_dir / rel_path
         actual_sha256 = hashlib.sha256(actual_path.read_bytes()).hexdigest()
         if actual_sha256 != expected_sha256:
@@ -152,17 +183,122 @@ def _load_audited_population(audit_dir: Path) -> dict:
     audit_rows = {}
     for run in _require_dict(summary, "audit summary").get("runs", []):
         run_id = run["run_id"]
-        run_report = json.loads((audit_dir / f"{run_id}.json").read_text(encoding="utf-8"))
+        run_report_rel_path = f"{run_id}.json"
+        if run_report_rel_path not in manifested_files:
+            raise EvaluationInputError(
+                f"--audit-dir {audit_dir}: {run_report_rel_path} is not covered by manifest.json")
+        run_report = json.loads((audit_dir / run_report_rel_path).read_text(encoding="utf-8"))
+
+        extract_rel_path = run_report.get("preserved_extract_path")
+        if not extract_rel_path or extract_rel_path not in manifested_files:
+            raise EvaluationInputError(
+                f"--audit-dir {audit_dir}: run {run_id} has no manifest-covered "
+                "preserved_extract_path -- cannot bind its row_ids to original ticket content")
+        extract_path = audit_dir / extract_rel_path
+        try:
+            extract_bytes = extract_path.read_bytes()
+        except OSError as error:
+            raise EvaluationInputError(
+                f"--audit-dir {audit_dir}: cannot read preserved extract for run {run_id}: {error}")
+        if hashlib.sha256(extract_bytes).hexdigest() != run_report.get("extract_sha256"):
+            raise EvaluationInputError(
+                f"--audit-dir {audit_dir}: preserved extract for run {run_id} does not match its "
+                "recorded extract_sha256")
+        extract_data = json.loads(extract_bytes)
+        qualifying = extract_data.get("qualifying") if isinstance(extract_data, dict) else None
+        if not isinstance(qualifying, list):
+            raise EvaluationInputError(
+                f"--audit-dir {audit_dir}: run {run_id}'s preserved extract has no "
+                "'qualifying' list")
+        run_provider = extract_data.get("provider")
+
         for row in run_report.get("rows", []):
             row_id = row["row_id"]
             if row_id in audit_rows:
                 raise EvaluationInputError(
                     f"--audit-dir {audit_dir}: row_id {row_id!r} appears in more than one "
                     "audited run")
+            index = row.get("index")
+            original_selections = []
+            if isinstance(index, int) and 0 <= index < len(qualifying):
+                original_ticket = qualifying[index]
+                if isinstance(original_ticket, dict):
+                    raw_selections = original_ticket.get("selections")
+                    if isinstance(raw_selections, list):
+                        original_selections = [s for s in raw_selections if isinstance(s, dict)]
             audit_rows[row_id] = {"run_id": run_id, "code": row.get("code"),
                                    "num_legs": row.get("num_legs"),
-                                   "num_selections": row.get("num_selections")}
+                                   "num_selections": row.get("num_selections"),
+                                   "provider": run_provider,
+                                   "original_selections": original_selections}
     return audit_rows
+
+
+def _validate_ticket_matches_audited_original(ticket, provider, legs_payload, audited_row, t_context):
+    """Rejects a supplied ticket whose provider or legs disagree with the
+    audited original ticket that the same row_id was retained from --
+    checking only that a row_id exists (its membership in the audited
+    population) is not the same as checking that the supplied ticket is the
+    one that was actually audited (F9_STEP4_REREVIEW.md S4R-03)."""
+    audited_provider = audited_row.get("provider")
+    if audited_provider is not None and provider != audited_provider:
+        raise EvaluationInputError(
+            f"{t_context}: provider {provider!r} does not match the audited original "
+            f"ticket's provider {audited_provider!r} for this row_id")
+    original_selections = audited_row.get("original_selections") or []
+    if len(legs_payload) != len(original_selections):
+        raise EvaluationInputError(
+            f"{t_context}: supplied {len(legs_payload)} legs but the audited original "
+            f"ticket for this row_id has {len(original_selections)} selections")
+    for leg_index, (leg_payload, original) in enumerate(zip(legs_payload, original_selections)):
+        leg_payload = _require_dict(leg_payload, f"{t_context}.legs[{leg_index}]")
+        kickoff_payload = leg_payload.get("kickoff")
+        kickoff_raw = kickoff_payload.get("raw") if isinstance(kickoff_payload, dict) else None
+        field_pairs = (
+            ("event_display", "event"), ("league_display", "league"),
+            ("market", "market"), ("pick", "pick"), ("sport", "sport"),
+        )
+        mismatched = [supplied_field for supplied_field, original_field in field_pairs
+                      if leg_payload.get(supplied_field) != original.get(original_field)]
+        if kickoff_raw != original.get("kickoff"):
+            mismatched.append("kickoff.raw")
+        if mismatched:
+            raise EvaluationInputError(
+                f"{t_context}.legs[{leg_index}]: {', '.join(mismatched)} do not match the "
+                "audited original ticket's selection at the same position for this row_id -- "
+                "a row_id is bound to its original content, not just its membership in the "
+                "audited population")
+
+
+def _load_prior_evaluation(prior_dir: Path):
+    """Reads a prior `evaluate` command's output directory and returns the
+    raw evidence bytes, the parsed evidence dict and the audit_rows dict (or
+    None if that run was unanchored) it was produced from -- verifying every
+    manifested file's hash first, exactly as _load_audited_population does
+    for an audit directory. This is what lets a report be replayed, with the
+    same N and row decisions, after both the original --input file and
+    --audit-dir have been deleted or moved away (F9_STEP4_REREVIEW.md
+    S4R-04): the population snapshot itself was archived alongside the
+    report, not just an absolute path to where it used to live."""
+    manifest_path = prior_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise EvaluationInputError(f"--replay {prior_dir}: cannot read manifest.json: {error}")
+    for rel_path, expected_sha256 in _require_dict(manifest, "prior evaluation manifest").get("files", {}).items():
+        actual_path = prior_dir / rel_path
+        actual_sha256 = hashlib.sha256(actual_path.read_bytes()).hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise EvaluationInputError(
+                f"--replay {prior_dir}: {rel_path} does not match its manifested sha256 "
+                "-- archived evaluation artifact changed or corrupted since it was written")
+
+    raw_evidence_bytes = (prior_dir / "evidence.json").read_bytes()
+    evidence = json.loads(raw_evidence_bytes)
+    audit_population_path = prior_dir / "audit_population.json"
+    audit_rows = (json.loads(audit_population_path.read_text(encoding="utf-8"))
+                  if audit_population_path.exists() else None)
+    return raw_evidence_bytes, evidence, audit_rows
 
 
 def evaluate_run(evidence: dict, audit_rows: dict | None = None) -> dict:
@@ -191,22 +327,27 @@ def evaluate_run(evidence: dict, audit_rows: dict | None = None) -> dict:
     for t_index, ticket in enumerate(_require_list(_get(evidence, "tickets", "evidence"), "evidence.tickets")):
         t_context = f"tickets[{t_index}]"
         ticket = _require_dict(ticket, t_context)
-        ticket_id = _get(ticket, "ticket_id", t_context)
-        provider = _get(ticket, "provider", t_context)
-        raw_bet_type = _get(ticket, "raw_bet_type", t_context)
+        ticket_id = _get_str(ticket, "ticket_id", t_context)
+        provider = _get_str(ticket, "provider", t_context)
+        raw_bet_type = _get_str(ticket, "raw_bet_type", t_context)
         structure_verified = verify_bet_type(provider, raw_bet_type)["status"] == "verified"
 
         row_id = None
         if audit_rows is not None:
-            row_id = _get(ticket, "row_id", t_context)
+            row_id = _get_str(ticket, "row_id", t_context)
             if row_id not in audit_rows:
                 raise EvaluationInputError(
                     f"{t_context}: row_id {row_id!r} is not in the audited population")
             if row_id in seen_row_ids:
                 raise EvaluationInputError(f"{t_context}: row_id {row_id!r} repeated across tickets")
             seen_row_ids.add(row_id)
+            _validate_ticket_matches_audited_original(
+                ticket, provider,
+                _require_list(_get(ticket, "legs", t_context), f"{t_context}.legs"),
+                audit_rows[row_id], t_context)
 
         leg_outcomes = []
+        leg_reports = []
         seen_leg_ids = set()
         for l_index, leg_payload in enumerate(_require_list(
                 _get(ticket, "legs", t_context), f"{t_context}.legs")):
@@ -215,33 +356,33 @@ def evaluate_run(evidence: dict, audit_rows: dict | None = None) -> dict:
                 raise EvaluationInputError(
                     f"{t_context}: duplicate leg_id {leg_kwargs['leg_id']!r}")
             seen_leg_ids.add(leg_kwargs["leg_id"])
-            leg_outcomes.append(evaluate_selection(
+            # Single pass: evaluate_selection_detailed() returns both the
+            # LegOutcome and the MatchDecision (or None when the sport/market
+            # was unsupported and matching was never attempted) it computed
+            # along the way, so the report's matching provenance
+            # (F9_STEP4_REVIEW.md S4-04) never requires a second, ungated
+            # match_selection_event() call that could raise for a leg
+            # evaluate_selection_detailed() itself never attempted to match
+            # (F9_STEP4_REREVIEW.md S4R-06).
+            leg_outcome, decision = evaluate_selection_detailed(
                 **leg_kwargs, candidate_fixtures=fixtures, aliases=aliases,
-                verified_mappings=verified_mappings))
+                verified_mappings=verified_mappings)
+            leg_outcomes.append(leg_outcome)
+            matched_fixture = None
+            match_tier = None
+            if decision is not None:
+                match_tier = decision.tier
+                if decision.fixture is not None:
+                    matched_fixture = {"source": decision.fixture.provenance.source,
+                                        "source_fixture_id": decision.fixture.provenance.source_fixture_id}
+            leg_reports.append({
+                "leg_id": leg_outcome.leg_id, "status": leg_outcome.status.value,
+                "rule_id": leg_outcome.rule_id, "reason": leg_outcome.reason,
+                "match_tier": match_tier, "matched_fixture": matched_fixture,
+            })
         ticket_outcome = aggregate_ticket(leg_outcomes, structure_verified=structure_verified)
         ticket_outcomes.append(ticket_outcome)
 
-        # Retain, per leg, which fixture actually matched (tier + source +
-        # source_fixture_id) alongside the leg's own evaluated result, so a
-        # later caller can independently replay/audit the matching decision
-        # without re-deriving it (F9_STEP4_REVIEW.md S4-04).
-        leg_reports = []
-        for leg_payload, leg in zip(_get(ticket, "legs", t_context), ticket_outcome.legs):
-            leg_kwargs = _parse_leg(leg_payload, t_index, len(leg_reports))
-            decision = match_decision_for_leg(
-                provider=leg_kwargs["provider"], provider_event_id=leg_kwargs["provider_event_id"],
-                event_display=leg_kwargs["event_display"], league_display=leg_kwargs["league_display"],
-                kickoff=leg_kwargs["kickoff"], candidate_fixtures=fixtures, aliases=aliases,
-                verified_mappings=verified_mappings)
-            matched_fixture = None
-            if decision.fixture is not None:
-                matched_fixture = {"source": decision.fixture.provenance.source,
-                                    "source_fixture_id": decision.fixture.provenance.source_fixture_id}
-            leg_reports.append({
-                "leg_id": leg.leg_id, "status": leg.status.value,
-                "rule_id": leg.rule_id, "reason": leg.reason,
-                "match_tier": decision.tier, "matched_fixture": matched_fixture,
-            })
         ticket_reports.append({
             "ticket_id": ticket_id,
             "row_id": row_id,
@@ -353,18 +494,37 @@ def _audit_command(args):
 
 def _evaluate_command(args):
     try:
-        raw_evidence_bytes = args.input.read_bytes()
-        evidence = json.loads(raw_evidence_bytes)
-        audit_rows = _load_audited_population(args.audit_dir) if args.audit_dir else None
+        if args.replay and (args.input or args.audit_dir):
+            raise ValueError("--replay is mutually exclusive with --input/--audit-dir")
+        if not args.replay and not args.input:
+            raise ValueError("--input is required unless --replay is given")
+
+        if args.replay:
+            raw_evidence_bytes, evidence, audit_rows = _load_prior_evaluation(args.replay)
+            population_source = f"replay:{args.replay.resolve()}"
+        else:
+            raw_evidence_bytes = args.input.read_bytes()
+            evidence = json.loads(raw_evidence_bytes)
+            audit_rows = _load_audited_population(args.audit_dir) if args.audit_dir else None
+            population_source = str(args.audit_dir.resolve()) if args.audit_dir else None
+
         report = evaluate_run(evidence, audit_rows=audit_rows)
         report["generated_at"] = datetime.now(timezone.utc).isoformat()
-        report["population_source"] = str(args.audit_dir.resolve()) if args.audit_dir else None
+        report["population_source"] = population_source
         args.output.mkdir(parents=True, exist_ok=False)
         # The raw evidence bytes are preserved verbatim (not re-serialized)
         # and hashed into the manifest, so a later caller can independently
         # replay this exact evaluation even after the original --input file
-        # is deleted or changed (F9_STEP4_REVIEW.md S4-04).
+        # is deleted or changed (F9_STEP4_REVIEW.md S4-04). When the run was
+        # anchored to an audited population, that population snapshot itself
+        # -- not just the --audit-dir path, which may not exist by replay
+        # time -- is archived the same way, so N and every row's decision
+        # (including audited rows omitted from evidence) survive replay even
+        # after both the original evidence file and audit directory are gone
+        # (F9_STEP4_REREVIEW.md S4R-04).
         (args.output / "evidence.json").write_bytes(raw_evidence_bytes)
+        if audit_rows is not None:
+            write_json(args.output / "audit_population.json", audit_rows)
         write_json(args.output / "report.json", report)
         write_json_atomic(args.output / "manifest.json", {
             "generated_at": report["generated_at"],
@@ -403,15 +563,23 @@ def main(argv=None):
     evaluate_parser = subparsers.add_parser(
         "evaluate", help="Deterministic offline evaluation over an evidence file of "
                          "fixtures/aliases/verified mappings/tickets. No network.")
-    evaluate_parser.add_argument("--input", required=True, type=Path,
-                                 help="Evidence JSON file (fixtures, aliases, verified_mappings, tickets)")
+    evaluate_parser.add_argument("--input", type=Path, default=None,
+                                 help="Evidence JSON file (fixtures, aliases, verified_mappings, tickets). "
+                                      "Required unless --replay is given.")
     evaluate_parser.add_argument(
         "--audit-dir", type=Path, default=None,
         help="A prior 'audit' command's output directory. When given, every evidence "
              "ticket must carry a row_id from that audited population, and the "
              "denominator is the full audited row set (an audited row missing from "
              "evidence becomes an explicit unresolved ticket). When omitted, evaluate "
-             "runs as a synthetic/offline harness with no population anchoring.")
+             "runs as a synthetic/offline harness with no population anchoring. Mutually "
+             "exclusive with --replay.")
+    evaluate_parser.add_argument(
+        "--replay", type=Path, default=None,
+        help="A prior 'evaluate' command's output directory. Replays its archived "
+             "evidence.json and audit_population.json (if that run was anchored), "
+             "reproducing the same report even if the original --input file and "
+             "--audit-dir no longer exist. Mutually exclusive with --input/--audit-dir.")
     evaluate_parser.add_argument("--output", required=True, type=Path,
                                  help="New evaluation directory; existing directories are refused")
     evaluate_parser.set_defaults(handler=_evaluate_command)
