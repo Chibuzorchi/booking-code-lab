@@ -66,6 +66,15 @@ payout". `max_exposure` defaults to 1 and must be >= 1; optional target must be
 are a subset of the cap-1 selection when no target limit is supplied; the counts
 need not be equal.
 
+For historical review, `/api/codes` additionally returns `saved_count` (the number
+of retained extract rows), `expired_count`, and `expired_codes`. The latter contains
+otherwise-eligible saved tickets hidden solely because a match has kicked off;
+each carries `history_note` and the original `raw` ticket snapshot. These rows
+remain in `excluded` and do not enter `codes`, `pool_size`, or either analysis.
+The console's **Show expired codes** button reveals them with pagination and
+copy support. Kickoff expiry is not a win/loss result; outcomes are not checked by
+this endpoint. Other invalid rows remain excluded and are counted separately.
+
 A fresh-seed run has no seed to report until booking finishes, so `seed` is
 null while the run is active ("still booking") and `request.seed` stays null
 for the life of the run. Once the code is booked, `seed` carries it on every

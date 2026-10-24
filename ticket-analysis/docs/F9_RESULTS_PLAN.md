@@ -7,6 +7,14 @@ choices are actually working. This is retrospective analysis, not settlement of
 real stakes — `positions.json` already tracks what was actually placed; this is
 about everything else in the pool.
 
+Historical input requirement (confirmed 24 October): use the retained run's full
+`qualifying` snapshots, including started/expired tickets, for retrospective
+outcome checks. The current-eligibility `build_pool()` deliberately excludes
+started tickets and must not define the outcome-tracking population. Stage 1 now
+offers **Show expired codes** for reviewing those historical snapshots; it does
+not determine results. Preserve original legs when matching results rather than
+replacing them with a newly decoded coupon that may have dropped started legs.
+
 ## 1. Where results come from (and where they don't)
 
 Licensed sportsbooks buy settlement/odds data from a handful of B2B vendors —

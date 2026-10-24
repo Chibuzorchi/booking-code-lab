@@ -202,6 +202,46 @@ class APITests(RegistryTestBase):
                 self.assertEqual(self.request('POST', '/api/codes', body)[0], 400)
         self.assertEqual(self.request('GET', '/api/codes')[0], 405)
 
+    def test_history_reveals_started_codes_without_changing_analysis(self):
+        from pathlib import Path
+        from portfolio.api import dispatch
+        from unittest.mock import Mock
+
+        for provider in ('sportybet', 'bet9ja'):
+            with self.subTest(provider=provider):
+                upcoming = coupon('UPCOMING', 'future', provider=provider)
+                started = coupon('STARTED', 'past', provider=provider)
+                broken = coupon('BROKEN', 'broken', provider=provider)
+                upcoming['selections'][0]['kickoff'] = '2100-01-01T00:00:00Z'
+                started['selections'][0]['kickoff'] = '2000-01-01T00:00:00Z'
+                broken['selections'][0]['kickoff'] = '2000-01-01T00:00:00Z'
+                broken['num_legs'] = 99
+                saved = {'provider': provider, 'odds_basis': 'parsed_leg_product',
+                         'min_total_odds': 1, 'max_total_odds': 0,
+                         'qualifying': [upcoming, started, broken]}
+                snapshot = json.dumps(saved).encode()
+                reg = Mock()
+                reg.get.return_value = {'provider': provider, 'state': 'succeeded'}
+                reg.saved_codes_snapshot.return_value = (Path('snapshot.json'), snapshot, False)
+                reg.committed_extract_snapshot.return_value = (Path('snapshot.json'), snapshot)
+                _, listing = dispatch(reg, 'POST', '/api/codes', {'run_id': 'history'}, {})
+                self.assertEqual(listing['saved_count'], 3)
+                self.assertEqual(listing['pool_size'], 1)
+                self.assertEqual(listing['expired_count'], 1)
+                self.assertEqual([t['raw']['code'] for t in listing['codes']], ['UPCOMING'])
+                self.assertEqual([t['raw']['code'] for t in listing['expired_codes']], ['STARTED'])
+                self.assertIn('outcome not checked', listing['expired_codes'][0]['history_note'])
+                self.assertEqual(len(listing['excluded']), 2)
+                _, analysis = dispatch(reg, 'POST', '/api/distinct', {'run_id': 'history'}, {})
+                self.assertEqual(analysis['pool_size'], 1)
+                self.assertEqual([t['raw']['code'] for t in analysis['distinct']], ['UPCOMING'])
+                saved['qualifying'] = [started]
+                reg.saved_codes_snapshot.return_value = (Path('snapshot.json'), json.dumps(saved).encode(), True)
+                _, listing = dispatch(reg, 'POST', '/api/codes', {'run_id': 'history'}, {})
+                self.assertEqual(listing['pool_size'], 0)
+                self.assertEqual(listing['expired_count'], 1)
+                self.assertTrue(listing['partial'])
+
     def test_codes_lists_what_an_unfinished_run_saved(self):
         run_dir = self.workspace / 'stopped-run'
         run_dir.mkdir()
