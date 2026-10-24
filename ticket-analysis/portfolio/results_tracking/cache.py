@@ -52,15 +52,17 @@ class QuotaExceededError(RuntimeError):
 
 
 @contextmanager
-def _flock_path(path: Path):
-    """Exclusive flock on path, serializing access across processes.
-
-    Mirrors registry.py's _flock_path -- same convention, not reinvented.
-    """
+def _flock_path(path: Path, *, shared: bool = False):
+    """flock on path, serializing access across processes. Exclusive by
+    default (mirrors registry.py's _flock_path); shared=True takes a
+    read lock instead, letting concurrent readers proceed together while
+    still queuing behind -- and never overlapping -- a writer's exclusive
+    lock (S5-07: a reader must never observe raw.bin and meta.json from
+    two different writes)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
         yield fd
     finally:
         os.close(fd)
@@ -162,7 +164,15 @@ class FixtureCache:
     def _entry_dir(self, key: CacheKey) -> Path:
         return self._root / key.source / key.digest()
 
-    def get(self, key: CacheKey) -> CacheEntry | None:
+    def _lock_path(self, key: CacheKey) -> Path:
+        return self._entry_dir(key) / "write.lock"
+
+    def _get_locked(self, key: CacheKey) -> CacheEntry | None:
+        """Same as get(), but assumes the caller already holds this key's
+        lock (shared or exclusive) -- used by get() itself and by
+        get_or_fetch(), which must not re-acquire a lock it already holds
+        (flock does not nest safely across separate open()s of the same
+        path, even within one process)."""
         entry_dir = self._entry_dir(key)
         meta_path = entry_dir / "meta.json"
         raw_path = entry_dir / "raw.bin"
@@ -193,8 +203,16 @@ class FixtureCache:
             content_sha256=actual_sha256,
         )
 
-    def put(self, key: CacheKey, raw_bytes: bytes, *, all_terminal: bool,
-            fetched_at: datetime | None = None) -> CacheEntry:
+    def get(self, key: CacheKey) -> CacheEntry | None:
+        # Shared lock: queues behind (never overlaps) a writer's put(), so
+        # this can never observe raw.bin and meta.json from two different
+        # writes (S5-07) -- but any number of concurrent get()s proceed
+        # together.
+        with _flock_path(self._lock_path(key), shared=True):
+            return self._get_locked(key)
+
+    def _put_locked(self, key: CacheKey, raw_bytes: bytes, *, all_terminal: bool,
+                     fetched_at: datetime | None = None) -> CacheEntry:
         fetched_at = fetched_at or _utcnow()
         if fetched_at.utcoffset() != timedelta(0):
             raise CacheError("fetched_at must be UTC (offset zero)")
@@ -210,16 +228,48 @@ class FixtureCache:
             "all_terminal": all_terminal,
             "content_sha256": content_sha256,
         }
-        with _flock_path(entry_dir / "write.lock"):
-            _write_atomic(entry_dir / "raw.bin", raw_bytes)
-            _write_atomic(
-                entry_dir / "meta.json",
-                json.dumps(meta, indent=2, sort_keys=True).encode("utf-8"),
-            )
+        _write_atomic(entry_dir / "raw.bin", raw_bytes)
+        _write_atomic(
+            entry_dir / "meta.json",
+            json.dumps(meta, indent=2, sort_keys=True).encode("utf-8"),
+        )
         return CacheEntry(
             key=key, raw_bytes=raw_bytes, fetched_at=fetched_at,
             all_terminal=all_terminal, content_sha256=content_sha256,
         )
+
+    def put(self, key: CacheKey, raw_bytes: bytes, *, all_terminal: bool,
+            fetched_at: datetime | None = None) -> CacheEntry:
+        with _flock_path(self._lock_path(key)):
+            return self._put_locked(key, raw_bytes, all_terminal=all_terminal, fetched_at=fetched_at)
+
+    def get_or_fetch(self, key: CacheKey, fetch, *,
+                      is_stale=lambda entry: entry.is_stale()) -> CacheEntry:
+        """Single-flight ownership of key across threads and processes
+        (F9_STEP5_REVIEW.md S5-07): holds this key's exclusive lock for
+        the whole miss-or-stale -> fetch -> put sequence, so a concurrent
+        caller for the same key blocks on the lock rather than also
+        missing and also fetching -- when it then acquires the lock, its
+        own re-check under the lock already sees the fresh entry the
+        first caller just published, and it returns that without calling
+        fetch again (so no second source request/quota unit is spent on
+        data another caller just finished retrieving).
+
+        fetch() is called at most once, only on an actual miss/stale
+        result, only while still holding the lock, and must return
+        (raw_bytes, all_terminal) or raise -- its exception propagates
+        to this caller without writing anything. A fetch that is genuinely
+        slow (or whose attempt is abandoned by a caller-side timeout, per
+        jobs.py's documented "abandoned, not killed" behavior) holds this
+        key's lock for that long; a same-key retry then queues behind it
+        rather than racing it, which is the single-flight guarantee this
+        exists to provide, not a separate bug."""
+        with _flock_path(self._lock_path(key)):
+            entry = self._get_locked(key)
+            if entry is not None and not is_stale(entry):
+                return entry
+            raw_bytes, all_terminal = fetch()
+            return self._put_locked(key, raw_bytes, all_terminal=all_terminal)
 
 
 class QuotaTracker:

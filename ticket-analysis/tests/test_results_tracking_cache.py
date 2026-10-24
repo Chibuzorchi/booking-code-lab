@@ -8,6 +8,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 from portfolio.results_tracking.cache import (
     CacheEntry, CacheError, CacheKey, FixtureCache, PENDING_REFRESH_INTERVAL,
@@ -145,6 +146,120 @@ class FixtureCacheTests(unittest.TestCase):
             (entry_dir / "raw.bin").write_bytes(b"[tampered]")
             with self.assertRaises(CacheError):
                 cache.get(key)
+
+    def test_a_reader_never_observes_a_write_mid_replacement(self):
+        # S5-07 repro: a writer's put() replaces raw.bin then meta.json;
+        # a reader racing in between those two file replacements used to
+        # see new raw.bin bytes against the old meta.json and raise
+        # CacheError. get()'s shared lock now queues behind put()'s
+        # exclusive lock instead of reading unlocked.
+        import threading
+        import time as _time
+
+        with TemporaryDirectory() as tmp:
+            cache = FixtureCache(Path(tmp))
+            cache.put(_key(), b"[1]", all_terminal=True)
+
+            from portfolio.results_tracking.cache import _write_atomic as real_write_atomic
+
+            def _slow_write_atomic(path, raw_bytes):
+                if path.name == "raw.bin":
+                    _time.sleep(0.05)  # widen the window between the two replacements
+                real_write_atomic(path, raw_bytes)
+
+            errors = []
+
+            def _reader():
+                try:
+                    for _ in range(20):
+                        cache.get(_key())
+                except CacheError as exc:
+                    errors.append(exc)
+
+            reader_threads = [threading.Thread(target=_reader) for _ in range(4)]
+            for t in reader_threads:
+                t.start()
+
+            with mock.patch("portfolio.results_tracking.cache._write_atomic",
+                             side_effect=_slow_write_atomic):
+                cache.put(_key(), b"[2]", all_terminal=True)
+
+            for t in reader_threads:
+                t.join(timeout=5.0)
+
+            self.assertEqual(errors, [])
+            self.assertEqual(cache.get(_key()).raw_bytes, b"[2]")
+
+    def test_get_or_fetch_returns_a_fresh_entry_without_calling_fetch(self):
+        with TemporaryDirectory() as tmp:
+            cache = FixtureCache(Path(tmp))
+            cache.put(_key(), b"[1]", all_terminal=True)
+            called = []
+
+            def _fetch():
+                called.append(True)
+                return b"[2]", True
+
+            entry = cache.get_or_fetch(_key(), _fetch, is_stale=lambda e: False)
+            self.assertEqual(entry.raw_bytes, b"[1]")
+            self.assertEqual(called, [])
+
+    def test_get_or_fetch_calls_fetch_once_on_a_miss(self):
+        with TemporaryDirectory() as tmp:
+            cache = FixtureCache(Path(tmp))
+            called = []
+
+            def _fetch():
+                called.append(True)
+                return b"[1]", True
+
+            entry = cache.get_or_fetch(_key(), _fetch)
+            self.assertEqual(entry.raw_bytes, b"[1]")
+            self.assertEqual(len(called), 1)
+            self.assertEqual(cache.get(_key()).raw_bytes, b"[1]")
+
+    def test_concurrent_get_or_fetch_for_the_same_key_only_fetches_once(self):
+        # S5-07 repro: two concurrent callers missing the same key must
+        # not both fetch -- the second must block on the first and then
+        # reuse its result.
+        import threading
+        import time as _time
+
+        with TemporaryDirectory() as tmp:
+            cache = FixtureCache(Path(tmp))
+            call_count = {"n": 0}
+            lock = threading.Lock()
+
+            def _fetch():
+                with lock:
+                    call_count["n"] += 1
+                _time.sleep(0.1)
+                return b"[1]", True
+
+            results = []
+
+            def _caller():
+                results.append(cache.get_or_fetch(_key(), _fetch).raw_bytes)
+
+            threads = [threading.Thread(target=_caller) for _ in range(3)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5.0)
+
+            self.assertEqual(call_count["n"], 1)
+            self.assertEqual(results, [b"[1]", b"[1]", b"[1]"])
+
+    def test_get_or_fetch_propagates_a_fetch_error_without_writing(self):
+        with TemporaryDirectory() as tmp:
+            cache = FixtureCache(Path(tmp))
+
+            def _fetch():
+                raise RuntimeError("boom")
+
+            with self.assertRaises(RuntimeError):
+                cache.get_or_fetch(_key(), _fetch)
+            self.assertIsNone(cache.get(_key()))
 
 
 class QuotaTrackerTests(unittest.TestCase):

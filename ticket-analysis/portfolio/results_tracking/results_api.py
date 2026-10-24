@@ -336,22 +336,28 @@ def _make_fetch_one(client, cache: FixtureCache, quota: QuotaTracker) -> Callabl
     def fetch_one(task: Task):
         date = task.payload
         key = _cache_key_for_date(date)
-        entry = cache.get(key)
-        if entry is not None and not entry.is_stale():
-            return date
-        try:
-            quota.record_request()
-        except QuotaExceededError as exc:
-            raise FatalTaskError(str(exc)) from exc
-        try:
-            raw_fixtures = client.get_fixtures_by_date(date)
-            fetched_at = datetime.now(timezone.utc).isoformat()
-            fixtures = [build_fixture(item, fetched_at=fetched_at)
-                        for item in filter_in_scope(raw_fixtures)]
-        except ApiFootballError as exc:
-            raise FatalTaskError(str(exc)) from exc
-        all_terminal = all(f.is_finished for f in fixtures) if fixtures else True
-        cache.put(key, json.dumps(raw_fixtures).encode("utf-8"), all_terminal=all_terminal)
+
+        def _fetch():
+            # Runs only while cache.get_or_fetch holds this key's lock,
+            # and only once per actual miss/stale result (S5-07) -- so a
+            # concurrent fetch_one for the same date never also records a
+            # quota request or issues its own source call for data this
+            # call is already retrieving.
+            try:
+                quota.record_request()
+            except QuotaExceededError as exc:
+                raise FatalTaskError(str(exc)) from exc
+            try:
+                raw_fixtures = client.get_fixtures_by_date(date)
+                fetched_at = datetime.now(timezone.utc).isoformat()
+                fixtures = [build_fixture(item, fetched_at=fetched_at)
+                            for item in filter_in_scope(raw_fixtures)]
+            except ApiFootballError as exc:
+                raise FatalTaskError(str(exc)) from exc
+            all_terminal = all(f.is_finished for f in fixtures) if fixtures else True
+            return json.dumps(raw_fixtures).encode("utf-8"), all_terminal
+
+        cache.get_or_fetch(key, _fetch)
         return date
     return fetch_one
 
