@@ -88,14 +88,33 @@ have silently mis-evaluated them.
 | unsupported | `incomplete_timeline` | 32 | 7 |
 | unsupported | `unsupported_sport` | 2 | 1 |
 
-Ticket-level impact: 54 of the run's 62 tickets have at least one in-scope
-leg; of those, 30 have every in-scope leg resolvable by a supported
-evaluator, and 24 are blocked by at least one unsupported leg (mostly
-`1X2 - 1UP/2UP/Never Down` timeline markets, statistics markets, and
-combined AND/OR markets). This is a count of evaluable legs given a
-hypothetically-known score, not a settlement result — no openfootball score
-was actually fetched or matched for this pass, consistent with step 2's
-finding that the one in-scope league's data is currently ~5 weeks stale.
+Ticket-level impact -- four distinct counts, not one, per
+F9_IMPLEMENTATION_REVIEW.md R09 (conflating them overstates what's actually
+evaluable):
+
+- **Classified**: every leg above has a `classify()` result (supported or a
+  named unsupported reason). All 966 real selections are classified; none
+  are silently dropped.
+- **Rule-input-valid**: a supported leg whose evaluator actually resolves
+  (pick/specifier/score) is a separate, narrower question `football.py`
+  answers per-leg, not addressed by this table at all.
+- **Source-matchable**: whether the leg's fixture is actually resolvable
+  against a real score source (openfootball, Football-Data, API-Football)
+  is step 5's job, not attempted here or anywhere yet.
+- **Ticket-evaluable**: 54 of the run's 62 tickets have at least one
+  in-scope leg; of those, 30 have every *in-scope* leg classified
+  supported, but that 30 silently excludes each ticket's out-of-scope legs
+  from the denominator -- it is not a claim that those 30 tickets are fully
+  resolvable. Correcting for that: only **9** of the 62 tickets
+  (`T973NJ`, `T977CP`, `T977N2`, `T979P6`, `T97C5G`, `T97F5G`, `T97P6B`,
+  `T97PBC`, `T97PG1`) have *every original leg* -- in-scope and
+  out-of-scope alike -- both in scope and classified supported. Neither
+  number establishes rule-input validity, source availability, or a ticket
+  win; no openfootball score was actually fetched or matched for this pass,
+  consistent with step 2's finding that the one in-scope league's data is
+  currently ~5 weeks stale, and the manual Football-Data E0 import
+  (`archive/E0.csv`, 70 fixtures, 21 August-19 October 2026) does not cover
+  this run's fixture dates either (all start 23 October 2026 or later).
 
 ## Still unverified, left disabled
 
