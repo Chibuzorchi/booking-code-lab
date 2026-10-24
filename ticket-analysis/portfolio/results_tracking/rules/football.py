@@ -9,35 +9,57 @@ anything, resolves a fixture, or guesses a missing fact.
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 from .scores import InvalidScoreError, RegulationScore
 
 _OU_PICK_RE = re.compile(r"^(Over|Under)(?:\s+([0-9]+(?:\.[0-9]+)?))?$")
-_LINE_RE = re.compile(r"^total=([0-9]+(?:\.[0-9]+)?)$")
+# Accepts both providers' line representations: SportyBet's "total=2.5" and
+# Bet9ja's bare "2.5". A nonempty specifier that matches neither shape is
+# rejected outright (returns None), never silently ignored.
+_LINE_RE = re.compile(r"^(?:total=)?([0-9]+(?:\.[0-9]+)?)$")
 _SCORE_PICK_RE = re.compile(r"^([0-9]+):([0-9]+)$")
+_HALF_STEP = Decimal("0.5")
 
 
-def parse_over_under(pick: str, specifier: str) -> tuple[str, float] | None:
+def _is_supported_line(line: Decimal) -> bool:
+    """Only whole/half-goal lines (0, 0.5, 1, 1.5, ...) have a settlement
+    model in this project. Quarter/split-return lines (e.g. 2.25) are left
+    unresolved per F9_RESULTS_PLAN.md until that model exists."""
+    return (line / _HALF_STEP) % 1 == 0
+
+
+def parse_over_under(pick: str, specifier: str) -> tuple[str, Decimal] | None:
     """("Over"/"Under", line) from either provider's representation.
 
     Bet9ja: pick is a bare "Over"/"Under"; the line is only in the specifier
-    ("total=2.5"). SportyBet: the line is embedded in the pick ("Over 2.5")
-    and also, redundantly, in the specifier. When both carry a line they must
-    agree; a mismatch is a data-integrity problem, not a 50/50 guess, so
-    returns None (caller reports "invalid_input").
+    (bare "2.5"). SportyBet: the line is embedded in the pick ("Over 2.5")
+    and also, redundantly, in the specifier ("total=2.5"). When both carry a
+    line they must agree exactly (decimal, not float, comparison) -- a
+    mismatch is a data-integrity problem, not a 50/50 guess, so returns None
+    (caller reports "invalid_input"). A nonempty specifier that cannot be
+    parsed as either known shape is also rejected outright, rather than
+    silently falling back to the pick's own line.
     """
     pick_match = _OU_PICK_RE.match(pick or "")
     if not pick_match:
         return None
-    side, pick_line = pick_match.group(1), pick_match.group(2)
-    spec_match = _LINE_RE.match(specifier or "")
-    spec_line = spec_match.group(1) if spec_match else None
-    if pick_line and spec_line and float(pick_line) != float(spec_line):
+    side, pick_line_raw = pick_match.group(1), pick_match.group(2)
+    pick_line = Decimal(pick_line_raw) if pick_line_raw else None
+
+    spec_line = None
+    if specifier:
+        spec_match = _LINE_RE.match(specifier)
+        if not spec_match:
+            return None
+        spec_line = Decimal(spec_match.group(1))
+
+    if pick_line is not None and spec_line is not None and pick_line != spec_line:
         return None
-    line = pick_line or spec_line
+    line = pick_line if pick_line is not None else spec_line
     if line is None:
         return None
-    return side, float(line)
+    return side, line
 
 
 def over_under(pick: str, specifier: str, score: RegulationScore, period: str = "FT") -> tuple[str, str | None]:
@@ -45,6 +67,8 @@ def over_under(pick: str, specifier: str, score: RegulationScore, period: str = 
     if parsed is None:
         return "unresolved", "invalid_input"
     side, line = parsed
+    if not _is_supported_line(line):
+        return "unresolved", "unsupported_line"
     if period == "FT":
         total = score.home + score.away
     elif period == "HT":
@@ -59,7 +83,7 @@ def over_under(pick: str, specifier: str, score: RegulationScore, period: str = 
     else:
         return "unresolved", "invalid_input"
     if total == line:
-        return "void", None  # push: only reachable for an integer line
+        return "void", None  # push: only reachable for a whole-number line
     over = total > line
     return ("won", None) if (side == "Over") == over else ("lost", None)
 
@@ -87,11 +111,25 @@ def double_chance(pick: str, score: RegulationScore) -> tuple[str, str | None]:
     return ("won", None) if outcome in covered else ("lost", None)
 
 
-def goal_goal_no_goal(pick: str, score: RegulationScore) -> tuple[str, str | None]:
-    both_scored = score.home > 0 and score.away > 0
-    if pick == "Yes":
+def goal_goal_no_goal(pick: str, score: RegulationScore, period: str = "FT") -> tuple[str, str | None]:
+    """pick vocabulary covers both providers observed in real data:
+    SportyBet's "Yes"/"No" and Bet9ja's "GG"/"NG"."""
+    if period == "FT":
+        home_goals, away_goals = score.home, score.away
+    elif period == "HT":
+        if not score.has_half_time:
+            return "unresolved", "missing_period"
+        home_goals, away_goals = score.ht_home, score.ht_away
+    elif period == "2H":
+        if not score.has_half_time:
+            return "unresolved", "missing_period"
+        home_goals, away_goals = score.second_half
+    else:
+        return "unresolved", "invalid_input"
+    both_scored = home_goals > 0 and away_goals > 0
+    if pick in ("Yes", "GG"):
         return ("won", None) if both_scored else ("lost", None)
-    if pick == "No":
+    if pick in ("No", "NG"):
         return ("lost", None) if both_scored else ("won", None)
     return "unresolved", "invalid_input"
 
@@ -142,6 +180,8 @@ def team_total_over_under(pick: str, specifier: str, score: RegulationScore, sid
     if parsed is None:
         return "unresolved", "invalid_input"
     pick_side, line = parsed
+    if not _is_supported_line(line):
+        return "unresolved", "unsupported_line"
     if period == "FT":
         goals = score.home if side == "home" else score.away
     elif period == "HT":
