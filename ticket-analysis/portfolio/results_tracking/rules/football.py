@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal
+from fractions import Fraction
 
 from .scores import InvalidScoreError, RegulationScore
 
@@ -37,8 +38,13 @@ def _is_supported_line(line: Decimal) -> bool:
     _, digits, exponent = line.as_tuple()
     if isinstance(exponent, str) or len(digits) > _MAX_LINE_DIGITS:
         return False
-    doubled = line * 2
-    return doubled == doubled.to_integral_value()
+    # Fraction(Decimal) reads the exact coefficient/exponent pair directly
+    # (via Decimal.as_integer_ratio()) rather than doing decimal arithmetic,
+    # so this is independent of the caller's ambient decimal context -- a
+    # narrowed precision (e.g. localcontext().prec = 2) can no longer round
+    # a non-half line like 2.49 into a false "supported" answer.
+    doubled = Fraction(line) * 2
+    return doubled.denominator == 1
 
 
 def parse_over_under(pick: str, specifier: str) -> tuple[str, Decimal] | None:

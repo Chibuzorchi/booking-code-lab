@@ -96,6 +96,8 @@ def extract_regulation_score(fixture_json: dict) -> RegulationScore | None:
     fixture = _require_dict_or_empty(fixture_json.get("fixture"), "fixture")
     status_obj = _require_dict_or_empty(fixture.get("status"), "fixture.status")
     status = status_obj.get("short")
+    if status is not None and not isinstance(status, str):
+        raise ApiFootballError(f"fixture.status.short is not a string: {type(status)!r}")
     if status not in _REGULATION_FINISHED_STATUSES:
         return None
     score = _require_dict_or_empty(fixture_json.get("score"), "score")

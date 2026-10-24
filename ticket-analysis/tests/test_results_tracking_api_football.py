@@ -151,6 +151,15 @@ class ExtractRegulationScoreTests(unittest.TestCase):
         with self.assertRaises(ApiFootballError):
             extract_regulation_score(fixture)
 
+    def test_non_string_status_short_raises(self):
+        # Third re-review pass: status.short must be validated as a string
+        # before the `in` membership check, since an unhashable value (a
+        # list, here) raises TypeError against a set rather than the
+        # documented ApiFootballError.
+        fixture = {"fixture": {"status": {"short": []}}, "score": {}}
+        with self.assertRaises(ApiFootballError):
+            extract_regulation_score(fixture)
+
 
 if __name__ == "__main__":
     unittest.main()

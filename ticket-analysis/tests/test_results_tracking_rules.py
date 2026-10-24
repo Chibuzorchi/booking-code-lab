@@ -169,6 +169,18 @@ class OverUnderTests(unittest.TestCase):
         outcome = football.over_under(f"Over {line}", f"total={line}", RegulationScore(2, 0))
         self.assertEqual(outcome, ("unresolved", "unsupported_line"))
 
+    def test_quarter_line_unresolved_under_narrowed_decimal_context(self):
+        # Second re-review pass: the line check must not depend on the
+        # caller's ambient decimal context. Under prec=2, 2.49*2 rounds to
+        # 5 under naive Decimal arithmetic, which would falsely look like a
+        # supported half-line and produce a binary "lost" instead of
+        # staying unresolved.
+        from decimal import localcontext
+        with localcontext() as ctx:
+            ctx.prec = 2
+            outcome = football.over_under("Over 2.49", "2.49", RegulationScore(2, 0))
+        self.assertEqual(outcome, ("unresolved", "unsupported_line"))
+
 
 class WinEitherHalfTests(unittest.TestCase):
     def test_home_wins_second_half_only(self):
