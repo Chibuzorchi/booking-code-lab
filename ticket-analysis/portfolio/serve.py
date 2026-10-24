@@ -29,8 +29,21 @@ from .api import APIError, dispatch, validate_method, allowed_methods
 from .decorrelation import ExtractError
 from .pages import app_page
 from .registry import RunRegistry, RunNotFoundError, RunStateError
+from .results_tracking.jobs import JobError, JobStore
+from .results_tracking.results_api import ResultsApiConfig, ResultsApiError
 from .worker import JobBusyError
 from .reporting import PROVIDERS, archive_stale, render
+
+
+class ResultsContext:
+    """Bundles what the new /api/results/... routes need beyond RunRegistry
+    -- never built from a client-supplied path, always from the same
+    workspace RunRegistry itself already owns."""
+
+    def __init__(self, registry: RunRegistry):
+        root = registry.runs_root.parent / "results_tracking"
+        self.config = ResultsApiConfig(root=root)
+        self.job_store = JobStore(self.config.jobs_root())
 
 # Injected only into the served page, so file:// stays clean and offline.
 POLL_SNIPPET = (
@@ -63,8 +76,9 @@ def is_loopback(host):
         return False
 
 
-def make_handler(results: Path, provider: str, registry=None):
+def make_handler(results: Path, provider: str, registry=None, results_context=None):
     registry = registry if registry is not None else RunRegistry()
+    results_context = results_context if results_context is not None else ResultsContext(registry)
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -162,7 +176,8 @@ def make_handler(results: Path, provider: str, registry=None):
                     raise ValueError('Duplicate query parameters are not allowed')
                 body = self._body() if self.command == 'POST' else {}
                 status, payload = dispatch(registry, self.command, url.path, body,
-                                           {key: values[0] for key, values in query.items()})
+                                           {key: values[0] for key, values in query.items()},
+                                           results=results_context)
                 self._json(status, payload)
             except APIError as exc:
                 self._json(exc.status, {'error': {'code': exc.code, 'message': exc.message}})
@@ -172,6 +187,10 @@ def make_handler(results: Path, provider: str, registry=None):
                 self._json(409, {'error': {'code': 'run_conflict', 'message': str(exc)}})
             except ExtractError as exc:
                 self._json(422, {'error': {'code': 'analysis_failed', 'message': str(exc)}})
+            except ResultsApiError as exc:
+                self._json(422, {'error': {'code': 'invalid_results_state', 'message': str(exc)}})
+            except JobError as exc:
+                self._json(409, {'error': {'code': 'job_conflict', 'message': str(exc)}})
             except (ValueError, OverflowError, RecursionError) as exc:
                 self._json(400, {'error': {'code': 'invalid_request', 'message': str(exc)}})
             except Exception:

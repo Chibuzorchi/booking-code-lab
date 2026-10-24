@@ -1,4 +1,5 @@
 """Local HTTP API contract; provider jobs remain owned by RunRegistry."""
+import dataclasses
 import json
 import math
 import re
@@ -7,6 +8,11 @@ from .worker import BookingUnavailableError, UnknownProviderError
 from .decorrelation import ExtractError, build_pool, decorrelate_extract, harvest_odds_band
 from .selection import ParamError, parse_decorrelate_params
 from .uniqueness import analyze_extract
+from .results_tracking.jobs import JobError, JobNotFoundError
+from .results_tracking.results_api import (
+    ReportNotFoundError, ResultsApiError, cancel_job, get_latest_report, list_codes,
+    submit_evaluation,
+)
 
 
 class APIError(Exception):
@@ -72,11 +78,23 @@ def scan_params(body):
                 max_codes=values['try_budget'], depth=3)
 
 
+_RESULTS_JOB_CANCEL_RE = re.compile(r'/api/results/jobs/[^/]+/cancel')
+_RESULTS_JOB_RE = re.compile(r'/api/results/jobs/[^/]+')
+_RESULTS_CODES_RE = re.compile(r'/api/results/(?!jobs(?:/|$))[^/]+/codes')
+_RESULTS_RUN_RE = re.compile(r'/api/results/(?!jobs(?:/|$))[^/]+')
+
+
 def allowed_methods(path):
     if path in ('/api/scan', '/api/codes', '/api/distinct', '/api/decorrelate') or re.fullmatch(r'/api/scan/[^/]+/cancel', path):
         return ('POST',)
     if path == '/api/runs' or re.fullmatch(r'/api/scan/[^/]+', path):
         return ('GET', 'HEAD')
+    if _RESULTS_JOB_CANCEL_RE.fullmatch(path):
+        return ('POST',)
+    if _RESULTS_JOB_RE.fullmatch(path) or _RESULTS_CODES_RE.fullmatch(path):
+        return ('GET', 'HEAD')
+    if _RESULTS_RUN_RE.fullmatch(path):
+        return ('GET', 'HEAD', 'POST')
     raise APIError(404, 'not_found', 'Unknown API route')
 
 
@@ -86,7 +104,24 @@ def validate_method(method, path):
         raise APIError(405, 'method_not_allowed', 'Allowed methods: ' + ', '.join(allowed))
 
 
-def dispatch(registry, method, path, body, query):
+def _job_payload(record):
+    return dataclasses.asdict(record)
+
+
+def _bounded_int(query, name, default, minimum):
+    value = query.get(name)
+    if value is None or value == '':
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise ParamError(f'{name} must be an integer') from None
+    if parsed < minimum:
+        raise ParamError(f'{name} must be an integer >= {minimum}')
+    return parsed
+
+
+def dispatch(registry, method, path, body, query, results=None):
     validate_method(method, path)
     if method in ('GET', 'HEAD'):
         if path == '/api/runs':
@@ -96,7 +131,63 @@ def dispatch(registry, method, path, body, query):
         if path.startswith('/api/scan/') and '/' not in path[len('/api/scan/'):]:
             fields(query, ())
             return 200, registry.get(path[len('/api/scan/'):])
+        if results is not None:
+            if _RESULTS_JOB_RE.fullmatch(path):
+                fields(query, ())
+                job_id = path[len('/api/results/jobs/'):]
+                try:
+                    return 200, _job_payload(results.job_store.get(job_id))
+                except JobNotFoundError as exc:
+                    raise APIError(404, 'job_not_found', 'Result job not found') from exc
+            if _RESULTS_CODES_RE.fullmatch(path):
+                fields(query, ('revision', 'offset', 'limit'))
+                run_id = path[len('/api/results/'):-len('/codes')]
+                revision_id = query.get('revision')
+                if not isinstance(revision_id, str) or not revision_id:
+                    raise ParamError('revision is required')
+                offset = _bounded_int(query, 'offset', 0, 0)
+                limit = _bounded_int(query, 'limit', 50, 1)
+                try:
+                    return 200, list_codes(results.config, run_id, revision_id,
+                                            offset=offset, limit=limit)
+                except ReportNotFoundError as exc:
+                    raise APIError(404, 'report_not_found', 'No such revision for this run') from exc
+                except ResultsApiError as exc:
+                    raise APIError(422, 'invalid_results_state', str(exc)) from exc
+            if _RESULTS_RUN_RE.fullmatch(path):
+                fields(query, ())
+                run_id = path[len('/api/results/'):]
+                try:
+                    return 200, get_latest_report(results.config, run_id)
+                except ReportNotFoundError as exc:
+                    raise APIError(404, 'report_not_found', 'No completed report for this run') from exc
+                except ResultsApiError as exc:
+                    raise APIError(422, 'invalid_results_state', str(exc)) from exc
     elif method == 'POST':
+        if results is not None and _RESULTS_JOB_CANCEL_RE.fullmatch(path):
+            fields(query, ())
+            fields(body, ())
+            job_id = path[len('/api/results/jobs/'):-len('/cancel')]
+            try:
+                return 200, _job_payload(cancel_job(results.job_store, job_id))
+            except JobNotFoundError as exc:
+                raise APIError(404, 'job_not_found', 'Result job not found') from exc
+        if results is not None and _RESULTS_RUN_RE.fullmatch(path):
+            fields(query, ())
+            fields(body, ('refresh', 'allow_partial'))
+            refresh = body.get('refresh', False)
+            allow_partial = body.get('allow_partial', False)
+            if type(refresh) is not bool:
+                raise ParamError('refresh must be a boolean')
+            if type(allow_partial) is not bool:
+                raise ParamError('allow_partial must be a boolean')
+            run_id = path[len('/api/results/'):]
+            try:
+                record = submit_evaluation(registry, results.config, results.job_store, run_id,
+                                            refresh=refresh, allow_partial=allow_partial)
+            except ResultsApiError as exc:
+                raise APIError(422, 'invalid_results_state', str(exc)) from exc
+            return 202, _job_payload(record)
         fields(query, ())
         if path == '/api/scan':
             params = scan_params(body)
