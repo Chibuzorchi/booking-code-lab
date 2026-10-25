@@ -4,14 +4,14 @@
 <style>
 :root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#182b29;background:#f4f6f3;font-size:15px;color-scheme:light}
 *{box-sizing:border-box}body{margin:0}button,input,select,textarea{font:inherit}button,select{cursor:pointer}
-button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid #bb690c;outline-offset:3px}
+[hidden]{display:none!important}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid #bb690c;outline-offset:3px}
 header{background:#123e35;color:#fff;padding:32px max(24px,calc((100vw - 1120px)/2))}
 .eyebrow{text-transform:uppercase;letter-spacing:.15em;font-size:12px;font-weight:700;color:#b4d5c5}
 h1{font-size:32px;margin:8px 0;font-weight:650;letter-spacing:-.5px}
 header p{color:#d1e1d8;max-width:760px;line-height:1.6;margin:0}
 main{max-width:1120px;margin:auto;padding:24px 24px 64px}
 .panel{background:#fff;border:1px solid #dce4dc;border-radius:14px;margin-bottom:18px;padding:22px}
-.panel[aria-disabled=true]{opacity:.62}
 h2{font-size:19px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
 h3{font-size:15px;margin:22px 0 0}
 .step{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#123e35;color:#fff;font-size:13px;font-weight:700}
@@ -19,8 +19,8 @@ fieldset{border:0;margin:0;padding:0}
 .grid{display:flex;gap:14px;align-items:end;flex-wrap:wrap;margin-top:14px}
 label{display:flex;flex-direction:column;gap:7px;font-size:13px;font-weight:600}
 label span{font-weight:400;color:#5c6c64;font-size:12px}
-input,select{padding:10px;border:1px solid #b8c8bd;border-radius:7px;background:#fff;color:#182b29;min-height:44px;min-width:120px}
-button{border:1px solid #b8c8bd;background:#f5f8f4;border-radius:7px;padding:10px 14px;color:#184b3e;min-height:44px;font-weight:600}
+input,select{padding:10px;border:1px solid #7b8d80;border-radius:7px;background:#fff;color:#182b29;min-height:44px;min-width:120px}
+button{border:1px solid #7b8d80;background:#f5f8f4;border-radius:7px;padding:10px 14px;color:#184b3e;min-height:44px;font-weight:600}
 button.go{background:#1c5344;border-color:#1c5344;color:#fff}
 button:disabled{opacity:.45;cursor:default}
 button.is-copied{background:#1d6b3a;color:#fff;border-color:#1d6b3a}
@@ -37,7 +37,12 @@ summary .copy-fallback{grid-column:1/-1}
 .bar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:18px 0 0;flex-wrap:wrap}
 .bar p{margin:0;font-size:13px;color:#5c6c64}
 .ticket{border:1px solid #dce4dc;border-radius:9px;margin-top:9px;overflow:hidden}
-.ticket summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(120px,1fr) 62px minmax(110px,150px) 90px 20px;gap:14px;padding:14px;align-items:center}
+.ticket summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(0,1fr) 62px minmax(110px,150px) max-content 20px;gap:14px;padding:14px;align-items:center}
+.ticket summary.has-extra{grid-template-columns:minmax(0,1fr) 52px minmax(90px,120px) minmax(120px,180px) max-content 20px}
+.ticket summary>span{min-width:0;overflow-wrap:anywhere}
+.ticket summary>button{justify-self:start}
+/* Keep the summary's keyboard outline inside the card's clipped border. */
+.ticket summary:focus-visible{outline-offset:-3px}
 .ticket summary::-webkit-details-marker{display:none}.ticket summary:hover{background:#f6f9f5}
 .ticket[open] summary{background:#edf4ed;border-bottom:1px solid #dce4dc}
 .ticket summary small{display:block;font-size:11px;color:#5c6c64;margin-bottom:4px}
@@ -53,7 +58,8 @@ label.check{max-width:270px}label.check .row{display:flex;align-items:center;gap
 label.check input{width:18px;height:18px;min-width:0;min-height:0;flex:none;accent-color:#1c5344}
 noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin-bottom:18px}
 @media(max-width:700px){h1{font-size:26px}main{padding:16px 12px 48px}.panel{padding:16px}
-.ticket summary{grid-template-columns:1fr 86px;gap:10px}.chev{display:none}label{width:100%}input,select{width:100%}}
+.ticket summary,.ticket summary.has-extra{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
+.ticket summary>button{grid-column:1/-1}.chev{display:none}label{width:100%}input,select{width:100%}}
 </style></head><body>
 <header>
   <div class="eyebrow">Local run console · paper only</div>
@@ -85,12 +91,12 @@ noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin
       </details>
     </fieldset>
   </form>
-  <p class="error" id="s1-error" hidden></p>
+  <p class="error" id="s1-error" role="alert" aria-atomic="true" hidden></p>
   <p class="notice" id="s1-state" role="status" aria-live="polite">No run yet.</p>
   <ul class="facts" id="s1-counters" hidden></ul>
   <div id="s1-codes" hidden>
     <h3>All codes from this run</h3>
-    <p class="error" id="s1-codes-error" hidden></p>
+    <p class="error" id="s1-codes-error" role="alert" aria-atomic="true" hidden></p>
     <p class="notice" id="s1-band" hidden></p>
     <button id="s1-expired" type="button" aria-pressed="false" hidden>Show expired codes</button>
     <fieldset id="s1-view" hidden>
@@ -121,7 +127,7 @@ noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin
   <fieldset id="s2-fields" disabled>
     <div class="grid"><button class="go" id="s2-run" type="button">Find distinct codes</button></div>
   </fieldset>
-  <p class="error" id="s2-error" hidden></p>
+  <p class="error" id="s2-error" role="alert" aria-atomic="true" hidden></p>
   <ul class="facts" id="s2-facts" hidden></ul>
   <p class="notice" id="s2-band" hidden></p>
   <fieldset id="s2-view" hidden>
@@ -149,7 +155,7 @@ noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin
     </div>
   </fieldset>
   <p class="notice">Stage 3 always runs on the run's full eligible pool, overlapping codes included — not on stage 2's distinct list, and not on whatever stage 2's order/band controls are showing.</p>
-  <p class="error" id="s3-error" hidden></p>
+  <p class="error" id="s3-error" role="alert" aria-atomic="true" hidden></p>
   <ul class="facts" id="s3-facts" hidden></ul>
   <p class="notice" id="s3-band" hidden></p>
   <p class="notice" id="s3-subset" hidden></p>
@@ -725,7 +731,8 @@ function legTable(legs) {
 }
 
 function ticketCard(code, columns, detail) {
-  const card = node('details', undefined, 'ticket'), summary = node('summary');
+  const card = node('details', undefined, 'ticket');
+  const summary = node('summary', undefined, columns.length > 2 ? 'has-extra' : undefined);
   const first = node('span');
   first.append(node('small', 'Booking code'), node('strong', code));
   summary.append(first);
