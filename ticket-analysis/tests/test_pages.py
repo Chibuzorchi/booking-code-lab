@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from html.parser import HTMLParser
 
 import portfolio
 from portfolio.distinct_page import render_html
@@ -23,6 +25,45 @@ MARKER = 'const Copy = (() =>'          # the helper's own first line
 def pages(html):
     """Every <script> body in a rendered page, so duplication cannot hide."""
     return re.findall(r'<script[^>]*>(.*?)</script>', html, re.S)
+
+
+class ConsoleAssetTests(unittest.TestCase):
+    def test_console_inlines_each_source_once_in_execution_order(self):
+        html = app_page()
+        css = (PORTFOLIO / 'app.css').read_text(encoding='utf-8')
+        js = (PORTFOLIO / 'app.js').read_text(encoding='utf-8')
+        self.assertEqual(re.findall(r'<style>(.*?)</style>', html, re.S), [css])
+        self.assertEqual(pages(html), [copy_js(), js])
+        for marker in ('__APP_CSS__', '__APP_JS__', PLACEHOLDER):
+            self.assertNotIn(marker, html)
+        external_assets = []
+        class Assets(HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if (tag == 'script' and 'src' in attrs) or (tag == 'link' and attrs.get('rel') == 'stylesheet'):
+                    external_assets.append(attrs)
+        Assets().feed(html)
+        self.assertEqual(external_assets, [])
+
+    def test_console_refuses_missing_or_duplicate_asset_slots(self):
+        from portfolio.pages import _asset
+        for marker in ('__APP_CSS__', '__APP_JS__'):
+            for replacement in ('', marker + marker):
+                with self.subTest(marker=marker, replacement=replacement):
+                    def asset(name):
+                        text = _asset(name)
+                        return text.replace(marker, replacement) if name == 'app.html' else text
+                    with patch('portfolio.pages._asset', side_effect=asset):
+                        with self.assertRaisesRegex(ValueError, 'exactly one'):
+                            app_page()
+
+    def test_console_assets_cannot_close_their_inline_elements(self):
+        from portfolio.pages import _asset
+        for name, closing in (('app.css', '</STYLE>'), ('app.js', '</SCRIPT>')):
+            with self.subTest(asset=name):
+                with patch('portfolio.pages._asset', side_effect=lambda asset: closing if asset == name else _asset(asset)):
+                    with self.assertRaisesRegex(ValueError, 'cannot be inlined'):
+                        app_page()
 
 
 class HelperSourceTests(unittest.TestCase):

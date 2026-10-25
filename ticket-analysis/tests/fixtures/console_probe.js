@@ -3,7 +3,7 @@
  * already left, a provider switch, cancelled_unresolved settling, and a new run
  * that arrives already succeeded.
  *
- * The script is executed as written (extracted from portfolio/app.html) against a
+ * The script is executed as written (loaded from portfolio/app.js) against a
  * DOM stub, a fetch whose replies this file resolves by hand, and fake timers, so
  * every observation below is the real code's behaviour. The clipboard paths are not
  * stubbed here: copy_probe.js covers those against the helper itself.
@@ -14,9 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const PAGE = path.join(__dirname, '..', '..', 'portfolio', 'app.html');
-const blocks = fs.readFileSync(PAGE, 'utf8').match(/<script>\n([\s\S]*?)<\/script>/g);
-const SOURCE = blocks[blocks.length - 1].replace(/^<script>\n/, '').replace(/<\/script>$/, '');
+const SOURCE = fs.readFileSync(path.join(__dirname, '..', '..', 'portfolio', 'app.js'), 'utf8');
 
 class El {
   constructor(tag) {

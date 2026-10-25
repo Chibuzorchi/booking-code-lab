@@ -5,6 +5,7 @@ Optional: pip install playwright && python3 -m playwright install chromium
 Missing Playwright skips this class; an installed but broken browser fails.
 """
 import json
+import re
 import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -142,9 +143,9 @@ class BrowserControlTests(unittest.TestCase):
             self.assertGreaterEqual(self.contrast(colors['border'], colors['background']), 3)
 
     def assert_row_usable(self, row):
-        button = row.locator('button')
-        geometry = row.evaluate("""el => {
-            const r=el.getBoundingClientRect(), b=el.querySelector('button'), q=b.getBoundingClientRect();
+        button = row.get_by_role('button', name=re.compile(r'^(Copy|Copied)$'))
+        geometry = button.evaluate("""b => {
+            const r=b.closest('summary').getBoundingClientRect(), q=b.getBoundingClientRect();
             return {inside:q.left>=r.left && q.right<=r.right && q.bottom<=r.bottom,
                     unclipped:b.scrollWidth<=b.clientWidth+1, width:q.width, height:q.height};
         }""")
@@ -176,7 +177,7 @@ class BrowserControlTests(unittest.TestCase):
                     self.assert_row_usable(self.page.locator(f'#{stage}-cards summary').first)
                 self.page.locator('#s1-expired').click()
                 self.page.locator('#s1-next').click()
-                historical = self.page.locator('#s1-cards summary').filter(has_text='outcome not checked')
+                historical = self.page.locator('#s1-cards summary').filter(has_text='Scheduled kickoff has passed.')
                 expect(historical).to_have_count(1)
                 self.assert_row_usable(historical)
                 self.page.locator('#s1-expired').click()
@@ -198,7 +199,7 @@ class BrowserControlTests(unittest.TestCase):
         self.assertEqual(fallback.evaluate('e => getComputedStyle(e).outlineStyle'), 'solid')
         self.assertGreaterEqual(fallback.evaluate('e => parseFloat(getComputedStyle(e).outlineWidth)'), 3)
         row = self.page.locator('#s1-cards summary').first
-        row.locator('button').click()
+        row.get_by_role('button', name='Copy', exact=True).click()
         expect(row.locator('input')).to_be_focused()
         self.assertIsNone(row.locator('..').get_attribute('open'))
         self.assertLessEqual(self.page.evaluate('document.documentElement.scrollWidth'), 320)
