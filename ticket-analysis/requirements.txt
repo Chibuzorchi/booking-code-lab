@@ -1,0 +1,4 @@
+# F9_IMPLEMENTATION_REVIEW.md R11: api_football.py uses requests, which was
+# previously undeclared anywhere for ticket-analysis. Pinned to match the
+# version already used elsewhere in this repo (bet9ja/requirements.txt).
+requests==2.31.0

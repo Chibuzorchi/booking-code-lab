@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Harvest → Distinct → De-correlate</title>
+<title>Harvest → Distinct → De-correlate · Historical results</title>
 <style>
 :root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#182b29;background:#f4f6f3;font-size:15px;color-scheme:light}
 *{box-sizing:border-box}body{margin:0}button,input,select,textarea{font:inherit}button,select{cursor:pointer}
@@ -8,6 +8,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
 header{background:#123e35;color:#fff;padding:32px max(24px,calc((100vw - 1120px)/2))}
 .eyebrow{text-transform:uppercase;letter-spacing:.15em;font-size:12px;font-weight:700;color:#b4d5c5}
 h1{font-size:32px;margin:8px 0;font-weight:650;letter-spacing:-.5px}
+#historical-results p{overflow-wrap:anywhere}
 header p{color:#d1e1d8;max-width:760px;line-height:1.6;margin:0}
 main{max-width:1120px;margin:auto;padding:24px 24px 64px}
 .panel{background:#fff;border:1px solid #dce4dc;border-radius:14px;margin-bottom:18px;padding:22px}
@@ -37,7 +38,12 @@ summary .copy-fallback{grid-column:1/-1}
 .bar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:18px 0 0;flex-wrap:wrap}
 .bar p{margin:0;font-size:13px;color:#5c6c64}
 .ticket{border:1px solid #dce4dc;border-radius:9px;margin-top:9px;overflow:hidden}
-.ticket summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(120px,1fr) 62px minmax(110px,150px) 90px 20px;gap:14px;padding:14px;align-items:center}
+.ticket summary{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;gap:14px;padding:14px;align-items:center}
+.ticket-code{flex:1 1 160px;min-width:0;overflow-wrap:anywhere}
+.ticket-metric{flex:0 1 auto;min-width:64px}
+.ticket-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;max-width:100%;margin-left:auto}
+.ticket-history{flex:1 1 100%;display:flex;gap:8px;align-items:baseline;font-size:13px;color:#5c6c64}
+.ticket-history small{margin:0!important}.ticket-actions button{white-space:nowrap}
 .ticket summary::-webkit-details-marker{display:none}.ticket summary:hover{background:#f6f9f5}
 .ticket[open] summary{background:#edf4ed;border-bottom:1px solid #dce4dc}
 .ticket summary small{display:block;font-size:11px;color:#5c6c64;margin-bottom:4px}
@@ -53,7 +59,7 @@ label.check{max-width:270px}label.check .row{display:flex;align-items:center;gap
 label.check input{width:18px;height:18px;min-width:0;min-height:0;flex:none;accent-color:#1c5344}
 noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin-bottom:18px}
 @media(max-width:700px){h1{font-size:26px}main{padding:16px 12px 48px}.panel{padding:16px}
-.ticket summary{grid-template-columns:1fr 86px;gap:10px}.chev{display:none}label{width:100%}input,select{width:100%}}
+.ticket summary{gap:12px}.ticket-code{flex-basis:100%}.ticket-actions{margin-left:0}.chev{display:none}label{width:100%}input,select{width:100%}}
 </style></head><body>
 <header>
   <div class="eyebrow">Local run console · paper only</div>
@@ -101,7 +107,7 @@ noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin
         <button id="s1-view-reset" type="button">Show all</button>
       </div>
     </fieldset>
-    <div class="bar" id="s1-bar" hidden><p id="s1-count"></p><button id="s1-copy-all" type="button">Copy shown codes</button></div>
+    <div class="bar" id="s1-bar" hidden><p id="s1-count"></p><div class="ticket-actions"><button id="s1-check-results" type="button">Check all results for this run</button><button id="s1-copy-all" type="button">Copy shown codes</button></div></div>
     <div id="s1-cards"></div>
     <div class="bar" id="s1-pager" hidden><button id="s1-prev" type="button">‹ Prev</button><p id="s1-page-info"></p><button id="s1-next" type="button">Next ›</button></div>
   </div>
@@ -110,9 +116,37 @@ noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin
       <label>Run<select id="runs"><option value="">— none loaded —</option></select></label>
       <button id="runs-refresh" type="button">Refresh list</button>
       <button id="runs-load" type="button">Use this run</button>
+      <button id="runs-check-results" type="button">Check selected run’s results</button>
     </div>
     <p class="notice" id="runs-note">Only a run that committed an extract can feed stages 2 and 3.</p>
   </details>
+</section>
+
+<section class="panel" id="historical-results" aria-labelledby="results-heading">
+  <h2 id="results-heading">Historical results</h2>
+  <p class="notice">Open an earlier run above to check its original saved codes. Started games and overlapping codes are included.</p>
+  <div class="grid">
+    <button id="results-open" type="button" disabled>Open saved results</button>
+    <button id="results-check-all" type="button" disabled>Check all results</button>
+    <button id="results-refresh" type="button" disabled>Refresh all results</button>
+    <button id="results-cancel" type="button" disabled>Cancel result check</button>
+    <label class="check"><span>For a stopped run only</span><span class="row"><input id="results-partial" type="checkbox"> Use incomplete saved history</span></label>
+  </div>
+  <p id="results-job" role="status" aria-live="polite">Choose a saved run first.</p>
+  <p id="results-error" class="error" hidden></p>
+  <div id="results-body" hidden>
+    <p id="results-summary" class="notice"></p>
+    <p id="results-rates" class="notice"></p>
+    <p id="results-evidence" class="notice"></p>
+    <button id="results-show-all" type="button" hidden>Show all saved codes</button>
+    <label>Show outcomes<select id="results-filter">
+      <option value="">All saved codes</option><option value="won">Won</option><option value="lost">Lost</option>
+      <option value="void">Void</option><option value="pending">Pending</option>
+      <option value="unresolved">Unresolved</option><option value="not_checked">Not checked</option>
+    </select></label>
+    <div id="results-cards"></div>
+    <div class="bar"><button id="results-prev" type="button">Previous</button><p id="results-page"></p><button id="results-next" type="button">Next</button></div>
+  </div>
 </section>
 
 <section class="panel" id="s2" aria-labelledby="s2-h" aria-disabled="true">
@@ -248,7 +282,8 @@ async function api(method, path, body) {
   }
   if (!response.ok) {
     const error = (data && data.error) || {};
-    throw new Error(`${error.message || 'Request failed'} (HTTP ${response.status}${error.code ? ', ' + error.code : ''})`);
+    const failure = new Error(`${error.message || 'Request failed'} (HTTP ${response.status}${error.code ? ', ' + error.code : ''})`);
+    failure.status = response.status; failure.code = error.code; throw failure;
   }
   return data;
 }
@@ -326,6 +361,7 @@ function renderPager(stage, page, totalPages, total) {
 
 function clearRun() {
   view.run = null;
+  resetResults();
   $('s1-counters').hidden = true;
   $('s1-state').textContent = 'No run yet.';
   $('s1-cancel').disabled = true;
@@ -401,8 +437,9 @@ function showRun(status) {
   // A different run means the analysis on screen describes something else. Drop both
   // stages on any change of run id, whatever state the incoming run is in -- a run
   // that arrives already succeeded must not inherit the previous run's results.
-  if (!view.run || view.run.run_id !== status.run_id) resetAnalysis();
+  if (!view.run || view.run.run_id !== status.run_id) { resetAnalysis(); resetResults(); }
   view.run = status;
+  resultsControls();
   facts('s1-counters', counterRows(status));
   const parts = [`Run ${status.run_id} (${status.provider}) is ${status.state}`];
   if (status.seed) parts.push(`seed ${status.seed}`);
@@ -608,7 +645,7 @@ function renderCodes(report) {
   const codes = shown.rows.map(([ticket]) => bareCode(ticket));
   const state = view.run ? view.run.state : report.state;
   const lead = !report.partial
-    ? `${report.pool_size} code(s) in this run's odds band, overlapping ones included.`
+    ? `${report.pool_size} upcoming code(s) available for analysis; ${report.saved_count ?? rows.length} saved code(s) in this run, overlapping ones included.`
     : ACTIVE.has(state)
       ? `${report.pool_size} code(s) saved so far, overlapping ones included. The scan is still running; this list grows as more are saved.`
       : `The scan stopped early (${state}). ${report.pool_size} code(s) were saved before it stopped, overlapping ones included.`;
@@ -616,7 +653,7 @@ function renderCodes(report) {
     : [expired.length ? 'No upcoming codes in this snapshot.'
        : report.partial ? 'No codes saved yet.' : 'This run found no codes in its odds band.'];
   if (report.saved_count !== undefined) parts.push(`${report.saved_count} code(s) saved in this snapshot.`);
-  if (expired.length) parts.push(`${expired.length} saved code(s) ${view.showExpired ? 'shown' : 'hidden'} because a match has started. Outcomes have not been checked.`);
+  if (expired.length) parts.push(`${expired.length} saved code(s) ${view.showExpired ? 'shown' : 'hidden'} after their scheduled kickoff. Use Check result to inspect outcomes.`);
   const otherExcluded = report.excluded.length - expired.length;
   if (otherExcluded > 0) parts.push(`${otherExcluded} ${expired.length ? 'other ' : ''}extract row(s) were excluded from the pool.`);
   $('s1-count').textContent = parts.join(' ');
@@ -624,6 +661,8 @@ function renderCodes(report) {
   $('s1-copy-all').onclick = () => Copy.button($('s1-copy-all'), codes.join('\n'),
     {copied: 'Copied', empty: 'No codes shown', label: 'The booking codes shown, to copy'});
   $('s1-copy-all').disabled = !codes.length;
+  $('s1-check-results').textContent = `Check all ${report.saved_count ?? rows.length} saved codes`;
+  $('s1-check-results').disabled = !report.saved_count || Boolean(view.results && view.results.job);
 
   const {pageRows, totalPages, page} = paginate(shown.rows, view.codesPage || 0);
   view.codesPage = page;
@@ -632,8 +671,8 @@ function renderCodes(report) {
   for (const [ticket] of pageRows) {
     cards.append(ticketCard(bareCode(ticket),
       [['Legs', String(ticket.num_legs)], ['Odds', num(oddsOf(ticket, basis))],
-       ...(ticket.history_note ? [['History', ticket.history_note]] : [])],
-      () => legTable(ticket.legs)));
+       ...(ticket.history_note ? [['History', 'Scheduled kickoff has passed.']] : [])],
+      () => legTable(ticket.legs), ticket.row_id ? () => checkSavedCode(ticket.row_id, report.run_id) : null));
   }
   renderPager('s1', page, totalPages, shown.rows.length);
 }
@@ -676,6 +715,230 @@ async function loadCodes() {
     }
   }
 }
+
+/* Historical results always use the saved population, independently of Stage 1. */
+function resetResults() {
+  view.results = null;
+  $('results-body').hidden = true;
+  $('results-cards').replaceChildren();
+  $('results-job').textContent = 'Choose a saved run, then open its results.';
+  $('results-partial').checked = false;
+  $('results-filter').value = '';
+  fail('results-error', '');
+  resultsControls();
+}
+function resultsControls() {
+  const run = view.run;
+  const busy = Boolean(view.results && view.results.job);
+  const usable = run && (run.state === 'succeeded' || $('results-partial').checked);
+  $('results-open').disabled = !usable || busy;
+  $('results-check-all').disabled = !usable || busy;
+  $('results-refresh').disabled = !usable || busy || !view.results || !view.results.summary;
+  $('results-cancel').disabled = !busy;
+  $('results-partial').disabled = busy;
+  $('s1-check-results').disabled = !run || busy || !view.codes || !view.codes.saved_count;
+  $('runs-check-results').disabled = Boolean(view.submission) || busy;
+  for (const button of $('s1-cards').querySelectorAll('button[data-result-action]')) button.disabled = busy;
+  for (const button of $('results-cards').querySelectorAll('button')) button.disabled = busy;
+}
+function resultCurrent(state, mine) {
+  return gen === mine && view.results === state && view.run && view.run.run_id === state.run;
+}
+function resultReason(value) { return (value || '').replaceAll('_', ' '); }
+function resultRate(label, rate) {
+  return rate ? `${label}: ${rate.value == null ? 'unavailable' : (rate.value * 100).toFixed(2) + '%'} (${rate.numerator}/${rate.denominator})` : '';
+}
+async function openResults() {
+  if (!view.run) return;
+  const state = {run: view.run.run_id, partial: $('results-partial').checked,
+    page: 0, revision: null, snapshot: null, summary: null, job: null, loading: 0};
+  view.results = state;
+  const mine = gen;
+  fail('results-error', '');
+  $('results-job').textContent = 'Loading saved results…';
+  try {
+    try { state.summary = await api('GET', '/api/results/' + encodeURIComponent(state.run)); }
+    catch (e) { if (e.code !== 'report_not_found') throw e; }
+    if (!resultCurrent(state, mine)) return;
+    if (state.summary) state.revision = state.summary.revision_id;
+    await loadResultPage(state, mine);
+    if (resultCurrent(state, mine)) $('results-job').textContent = `Showing saved results for ${state.run}.`;
+  } catch (e) { if (resultCurrent(state, mine)) fail('results-error', e.message); }
+  if (resultCurrent(state, mine)) resultsControls();
+}
+async function loadResultPage(state = view.results, mine = gen) {
+  if (!state) return;
+  const request = ++state.loading;
+  const query = new URLSearchParams({offset: String(state.page * PAGE_SIZE), limit: String(PAGE_SIZE)});
+  if (state.revision) query.set('revision', state.revision);
+  else {
+    query.set('view', 'saved'); query.set('allow_partial', String(state.partial));
+    if (state.snapshot) query.set('snapshot', state.snapshot);
+  }
+  const filter = $('results-filter').value;
+  if (filter) query.set('status', filter);
+  if (state.focusRowId) query.set('row_id', state.focusRowId);
+  const page = await api('GET', '/api/results/' + encodeURIComponent(state.run) + '/codes?' + query);
+  if (!resultCurrent(state, mine) || request !== state.loading) return;
+  state.snapshot = page.input_digest || state.snapshot;
+  state.total = page.total;
+  const c = state.summary && state.summary.counts;
+  $('results-body').hidden = false;
+  $('results-summary').textContent = c
+    ? `${c.total} saved codes · ${c.won} won · ${c.lost} lost · ${c.void} void · ${c.pending} pending · ${c.unresolved} unresolved (including unchecked). ${state.summary.checked_count || 0} checked.`
+    : `${page.total} saved codes. Results have not been checked.`;
+  const rates = state.summary && state.summary.percentages;
+  $('results-rates').textContent = rates ? [resultRate('Confirmed wins / all saved codes', rates.confirmed_win_rate),
+    resultRate('Wins among decided wins/losses', rates.decided_win_loss_rate),
+    resultRate('Classification coverage', rates.classification_coverage)].filter(Boolean).join(' · ')
+    + ' Unknown outcomes are not losses. These historical rates are not a forecast.' : '';
+  $('results-evidence').textContent = (state.summary ? `Checked ${state.summary.created_at}. Revision ${state.revision}. ` : '')
+    + ((state.summary ? state.summary.population_complete : page.population_complete) === false ? 'Incomplete saved history. ' : '')
+    + (state.summary && Object.keys(state.summary.retrieval_errors || {}).length ? `${Object.keys(state.summary.retrieval_errors).length} date(s) have source limitations. ` : '')
+    + (state.summary && state.summary.leg_counts ? 'Selection outcomes: ' + Object.entries(state.summary.leg_counts).map(([status, count]) => `${count} ${status}`).join(', ') + '. ' : '')
+    + 'Ticket types, missing source access and unsupported markets can prevent a confirmed ticket result; inspect each code for its leg outcomes.';
+  const cards = $('results-cards'); cards.replaceChildren();
+  for (const row of page.rows) {
+    const original = row.original_ticket || {};
+    const card = node('article', undefined, 'panel');
+    card.append(node('h3', `${row.ticket_id || original.code || 'Saved row'} · ${row.checked ? row.status : 'not checked'}`));
+    if (row.reason) card.append(node('p', resultReason(row.reason)));
+    if (row.proxy_all_legs_won) card.append(node('p', 'All selected legs won. This is not a confirmed ticket win while its structure is unverified.'));
+    const button = node('button', row.checked ? 'Check again' : 'Check result'); button.type = 'button';
+    button.disabled = Boolean(state.job);
+    button.onclick = () => checkResults(row.row_id);
+    card.append(button);
+    const details = node('details'), summary = node('summary', 'Original picks and outcome evidence'); details.append(summary);
+    if (row.structure_verification && row.structure_verification.evidence)
+      details.append(node('p', 'Ticket structure evidence: ' + row.structure_verification.evidence));
+    const rawLegs = Array.isArray(original.selections) ? original.selections.filter(s => s && typeof s === 'object') : [];
+    const legs = row.legs && row.legs.length ? row.legs : rawLegs.map(selection => ({selection: {
+      event_display: selection.event, league_display: selection.league, market: selection.market,
+      pick: selection.pick, specifier: selection.specifier, kickoff: {raw: selection.kickoff}}, reason: 'not_checked'}));
+    for (const leg of legs) {
+      const selection = leg.selection || {};
+      details.append(node('h4', selection.event_display || leg.leg_id || 'Selection'));
+      details.append(node('p', [selection.league_display, selection.market, selection.pick, selection.specifier,
+        selection.kickoff && selection.kickoff.raw].filter(Boolean).join(' · ')));
+      details.append(node('p', `${leg.status || 'not checked'}${leg.reason ? ' · ' + resultReason(leg.reason) : ''}`));
+      const f = leg.fixture;
+      if (f) {
+        const score = f.score;
+        details.append(node('p', `${f.home_team} — ${f.away_team}: ${resultReason(f.state)}; regulation ${score ? score.home + '–' + score.away : 'unavailable'}`
+          + (score && score.ht_home != null ? `; half-time ${score.ht_home}–${score.ht_away}` : '')));
+        details.append(node('p', `Source ${f.provenance.source} / ${f.provenance.source_fixture_id}, observed ${f.provenance.fetched_at}. Match ${leg.match_tier}; rule ${leg.rule_id}.`));
+      }
+      if (leg.retrieval_error) details.append(node('p', leg.retrieval_error.message));
+      for (const candidate of leg.candidates || []) details.append(node('p', `Review candidate: ${candidate.event}, ${candidate.kickoff} (${candidate.source} / ${candidate.source_fixture_id}).`));
+    }
+    if (!legs.length) details.append(node('p', 'Original selections are unavailable or malformed. This row remains in the saved population.'));
+    card.append(details); cards.append(card);
+  }
+  if (!page.rows.length) cards.append(node('p', page.total ? 'No codes match this filter in this report. Unresolved codes may change as evidence becomes available.' : 'This snapshot contains no saved codes.'));
+  $('results-show-all').hidden = !state.focusRowId;
+  const filtered = page.filtered_total == null ? page.total : page.filtered_total;
+  $('results-page').textContent = `Page ${state.page + 1} of ${Math.max(1, Math.ceil(filtered / PAGE_SIZE))} · ${filtered} matching codes · ${page.total} saved in run`;
+  $('results-prev').disabled = state.page === 0;
+  $('results-next').disabled = (state.page + 1) * PAGE_SIZE >= filtered;
+}
+async function checkResults(rowId = null, refresh = false) {
+  const requestedRun = view.run && view.run.run_id, requestedGeneration = gen;
+  if (!view.results) { await openResults(); if (!view.results || !view.results.total) return; }
+  if (gen !== requestedGeneration || !view.run || view.run.run_id !== requestedRun) return;
+  const state = view.results, mine = gen;
+  if (state.job) return;
+  state.focusRowId = rowId;
+  state.page = 0;
+  $('results-filter').value = '';
+  const body = {refresh, allow_partial: state.partial};
+  if (rowId) body.row_id = rowId;
+  state.job = 'submitting'; resultsControls(); fail('results-error', '');
+  $('results-job').textContent = rowId ? 'Checking this saved code…' : 'Checking all saved codes…';
+  try {
+    const job = await api('POST', '/api/results/' + encodeURIComponent(state.run), body);
+    if (!resultCurrent(state, mine)) return;
+    state.job = job.job_id; resultsControls();
+    await pollResultJob(state, mine);
+  } catch (e) {
+    if (!resultCurrent(state, mine)) return;
+    state.job = null; resultsControls(); fail('results-error', e.message);
+  }
+}
+async function pollResultJob(state, mine) {
+  if (!resultCurrent(state, mine) || !state.job) return;
+  try {
+    const job = await api('GET', '/api/results/jobs/' + encodeURIComponent(state.job));
+    if (!resultCurrent(state, mine)) return;
+    fail('results-error', '');
+    $('results-job').textContent = `Result check ${job.state}${job.cancel_requested ? ' · cancellation requested' : ''}.`;
+    if (['succeeded', 'failed', 'cancelled'].includes(job.state)) {
+      state.job = null; resultsControls();
+      if (job.state === 'succeeded') {
+        state.summary = await api('GET', '/api/results/' + encodeURIComponent(state.run));
+        if (!resultCurrent(state, mine)) return;
+        state.revision = state.summary.revision_id;
+        await loadResultPage(state, mine);
+      } else if (job.error) fail('results-error', job.error.message || job.error.code);
+      return;
+    }
+    if (job.progress && job.progress.fetch_job_id) {
+      const fetchJob = await api('GET', '/api/results/jobs/' + encodeURIComponent(job.progress.fetch_job_id));
+      if (!resultCurrent(state, mine)) return;
+      const progress = fetchJob.progress || {};
+      $('results-job').textContent += ` Dates ${(progress.tasks_completed || []).length}/${progress.tasks_total || '?'}; request attempts ${progress.requests_used || 0}.`;
+    }
+    setTimeout(() => pollResultJob(state, mine), 1500);
+  } catch (e) {
+    if (resultCurrent(state, mine)) {
+      fail('results-error', e.message + ' Retrying job status…');
+      setTimeout(() => pollResultJob(state, mine), 3000);
+    }
+  }
+}
+function reloadResultPage() {
+  const state = view.results, mine = gen;
+  return loadResultPage(state, mine).catch(e => { if (resultCurrent(state, mine)) fail('results-error', e.message); });
+}
+async function checkSavedCode(rowId = null, expectedRun = null) {
+  const run = view.run;
+  if (!run || (expectedRun && run.run_id !== expectedRun)) return;
+  if (run.state !== 'succeeded' && !$('results-partial').checked) {
+    fail('results-error', 'Enable “Use incomplete saved history” before checking this stopped run.');
+    $('historical-results').scrollIntoView({behavior:'smooth', block:'start'});
+    return;
+  }
+  if (view.results && view.results.job) {
+    $('historical-results').scrollIntoView({behavior:'smooth', block:'start'});
+    return;
+  }
+  $('historical-results').scrollIntoView({behavior:'smooth', block:'start'});
+  await checkResults(rowId);
+}
+$('s1-check-results').addEventListener('click', () => checkSavedCode());
+$('runs-check-results').addEventListener('click', async () => {
+  const selected = $('runs').value, which = provider;
+  if (!selected || $('runs').disabled || view.submission) return;
+  await loadRun();
+  if (provider === which && view.run && view.run.run_id === selected) await checkSavedCode(null, selected);
+});
+$('results-show-all').addEventListener('click', () => {
+  if (!view.results) return;
+  view.results.focusRowId = null; view.results.page = 0; $('results-filter').value = ''; reloadResultPage();
+});
+$('results-open').addEventListener('click', openResults);
+$('results-check-all').addEventListener('click', () => checkResults());
+$('results-refresh').addEventListener('click', () => checkResults(null, true));
+$('results-partial').addEventListener('change', () => { view.results = null; $('results-body').hidden = true; resultsControls(); });
+$('results-filter').addEventListener('change', () => { if (view.results) { view.results.focusRowId = null; view.results.page = 0; reloadResultPage(); } });
+for (const [id, change] of [['results-prev', -1], ['results-next', 1]]) $(id).addEventListener('click', () => {
+  if (view.results) { view.results.page += change; reloadResultPage(); }
+});
+$('results-cancel').addEventListener('click', async () => {
+  const state = view.results, mine = gen;
+  if (!state || !state.job || state.job === 'submitting') return;
+  try { await api('POST', '/api/results/jobs/' + encodeURIComponent(state.job) + '/cancel', {}); }
+  catch (e) { if (resultCurrent(state, mine)) fail('results-error', e.message); }
+});
 
 /* ---------- stage 2: distinct ---------- */
 
@@ -724,15 +987,23 @@ function legTable(legs) {
   return scroll;
 }
 
-function ticketCard(code, columns, detail) {
+function ticketCard(code, columns, detail, onCheck = null) {
   const card = node('details', undefined, 'ticket'), summary = node('summary');
-  const first = node('span');
+  const first = node('span', undefined, 'ticket-code');
   first.append(node('small', 'Booking code'), node('strong', code));
   summary.append(first);
   for (const [name, value] of columns) {
-    const cell = node('span');
+    const cell = node('span', undefined, name === 'History' ? 'ticket-history' : 'ticket-metric');
     cell.append(node('small', name), node('span', value, 'n'));
-    summary.append(cell);
+    if (name !== 'History') summary.append(cell);
+  }
+  const actions = node('span', undefined, 'ticket-actions');
+  if (onCheck) {
+    const check = node('button', 'Check result'); check.type = 'button';
+    check.setAttribute('data-result-action', 'true');
+    check.disabled = Boolean(view.results && view.results.job);
+    check.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); onCheck(); });
+    actions.append(check);
   }
   const button = node('button', 'Copy');
   button.type = 'button';
@@ -741,7 +1012,12 @@ function ticketCard(code, columns, detail) {
     event.stopPropagation();
     Copy.button(button, code, {label: 'Booking code to copy'});
   });
-  summary.append(button, node('span', '›', 'chev'));
+  actions.append(button, node('span', '›', 'chev'));
+  summary.append(actions);
+  for (const [name, value] of columns.filter(([name]) => name === 'History')) {
+    const note = node('span', undefined, 'ticket-history');
+    note.append(node('small', name), node('span', value)); summary.append(note);
+  }
   card.append(summary);
   card.addEventListener('toggle', () => {
     if (!card.open || card.dataset.loaded) return;

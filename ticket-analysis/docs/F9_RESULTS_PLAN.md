@@ -59,7 +59,7 @@ are separate ingestion work. A code string in a log is not its full original tic
 
 ## 3. Real input inventory
 
-Initial set: the 23 October Bet9ja run
+Initial regression/audit set: the 23 October Bet9ja run
 `run-bet9ja-20261023-065902-28fff68b` (102 tickets) and SportyBet run
 `run-sportybet-20261023-070118-f6753695` (62). Record their extract hashes in the audit.
 They are not all finished merely because the runs happened yesterday.
@@ -324,7 +324,7 @@ contents. Missing supplied positions mean “no matching supplied position,” n
 “never played.” Do not rewrite actual payouts or settle the ledger; discrepancies
 are review flags. This integration must not block the main counterfactual report.
 
-## 9. First usable output and later UI
+## 9. Historical-run output and UI
 
 The backend includes CLI help, inspectable JSON and a human-readable report with
 run/population, five counts, numerator/denominator metrics, evidence age, unresolved
@@ -332,7 +332,7 @@ causes, original legs and proof references. Show paths/revision IDs for replay.
 Old runs can be evaluated without a new scan. All 164 sample tickets receive rows,
 even if many cannot be resolved yet.
 
-Stage 4 UI remains a separate follow-up reading the same reports. It is not gated
+The historical-results UI reads the same reports and is part of usable delivery. It is not gated
 on Stage 2 analysis: a saved history run is enough, with explicit incomplete mode
 for partial runs. Include started tickets without requiring the Stage 1 toggle.
 Pagination/filters change visible rows, not headline percentages. Show check time,
@@ -360,12 +360,27 @@ supplied position,” not an asserted list of tickets the user never played.
 5. **Persistent retrieval/jobs:** add verified adapters, fallback, budgets/cache,
    refresh/revisions, interruption recovery and API. API-Football needs configured
    access; new vendors need their own evidence review.
-6. **Acceptance evaluation:** report every one of the 164 retained tickets,
-   unresolved reasons and coverage by sport/market/league/type. Require zero false
+6. **Acceptance evaluation:** use older completed-run snapshots as the primary
+   product population: Bet9ja `run-bet9ja-20261008-205016-d0bb05e9` (25 retained
+   rows) and SportyBet `run-sportybet-20261010-071900-651fee94` (25). Verify actual
+   fixture/source finality rather than inferring it from the run date. Retain the
+   164-ticket 23 October population as a mixed-future regression case. Report every
+   retained row, unresolved reasons and coverage by sport/market/league/type. Require zero false
    accepted matches and zero wrong claimed outcomes in the hand-checked corpus;
    publish its size, not a claim of general perfection. Any claimed winner needs
    evidence for all required selected legs and ticket rules. Zero confirmed wins
    with uncertainty is not “we have never generated a winning code.”
+
+Acceptance includes opening an earlier run in the UI, checking an individual
+code, checking the whole run, viewing original selections and outcome evidence,
+and filtering/paging a pinned revision without changing full-population metrics.
+Unchecked rows remain unresolved in full-run accounting. A single-code check
+uses a frozen row identity; it cannot overwrite the denominator with a subset.
+Source access restrictions affect relevant legs and preserve other usable facts.
+A failed/cancelled refresh preserves the prior published revision.
+
+See `F9_HISTORICAL_RESULTS_IMPLEMENTATION.md` for configuration, the local-source
+workflow, verification evidence and remaining real-source/settlement limitations.
 
 Acceptance tests must include:
 
