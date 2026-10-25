@@ -32,6 +32,11 @@ class El {
     this.disabled = false;
     this.checked = false;
   }
+  scrollIntoView() {}
+  querySelectorAll(tag) {
+    return this.childNodes.flatMap(child => [
+      ...(child.tagName === tag.toUpperCase() ? [child] : []), ...child.querySelectorAll(tag)]);
+  }
   get firstChild() { return this.childNodes[0] || null; }
   append(...kids) { for (const kid of kids) this.childNodes.push(kid); }
   appendChild(kid) { this.childNodes.push(kid); return kid; }
@@ -638,6 +643,80 @@ scenarios.expired_history = async () => {
   await settle();
   return {hidden, revealed, copied, finalPage, rehidden, restored,
     reset: world.el('s1-expired').hidden, requests: world.pending.map(c => c.url)};
+};
+
+
+scenarios.historical_results = async () => {
+  const w = await start();
+  await pick(w, 'RUN_A', 'succeeded');
+  answer(take(w, '/api/codes'), codesReport('RUN_A')); await settle();
+  w.el('results-open').fire('click'); await settle();
+  answer(take(w, '/api/results/RUN_A'), {error:{code:'report_not_found', message:'No report'}}, 404); await settle();
+  const rows = Array.from({length:26},(_,i)=>({row_id:'digest:'+i, ticket_id:'OLD'+i,
+    status:'unresolved',reason:'not_checked',checked:false,legs:[],original_ticket:{code:'OLD'+i,selections:[]}}));
+  answer(take(w, '/codes?'), {total:26,filtered_total:26,input_digest:'digest',rows:rows.slice(0,25)}); await settle();
+  const before = {cards:w.el('results-cards').childNodes.length,summary:w.el('results-summary').textContent};
+  const button = w.el('results-cards').childNodes[0].childNodes.find(el=>el.tagName==='BUTTON');
+  button.fire('click'); await settle();
+  const submitted = take(w, '/api/results/RUN_A');
+  const rowSelector = submitted.body.row_id;
+  answer(submitted, {job_id:'job-one'},202); await settle();
+  answer(take(w,'/api/results/jobs/job-one'),{state:'succeeded',result:{revision_id:'rev-one'}}); await settle();
+  answer(take(w,'/api/results/RUN_A'),{revision_id:'rev-one',created_at:'2026-10-24',checked_count:1,
+    counts:{total:26,won:1,lost:0,void:0,pending:0,unresolved:25},percentages:{
+      confirmed_win_rate:{numerator:1,denominator:26,value:1/26},
+      decided_win_loss_rate:{numerator:1,denominator:1,value:1},
+      classification_coverage:{numerator:1,denominator:26,value:1/26}}}); await settle();
+  rows[0]={...rows[0],checked:true,status:'won',reason:null};
+  const focused = take(w,'/codes?');
+  const focusedRow = focused.url.includes('row_id=digest%3A0');
+  answer(focused,{total:26,filtered_total:1,rows:[rows[0]]}); await settle();
+  w.el('results-show-all').fire('click'); await settle();
+  answer(take(w,'/codes?'),{total:26,filtered_total:26,rows:rows.slice(0,25)}); await settle();
+  const checked = {summary:w.el('results-summary').textContent,rates:w.el('results-rates').textContent};
+  w.el('results-next').fire('click'); await settle();
+  const next = take(w,'/codes?');
+  const pinned = next.url.includes('revision=rev-one') && next.url.includes('offset=25');
+  answer(next,{total:26,filtered_total:26,rows:rows.slice(25)}); await settle();
+  const finalPage = w.el('results-cards').childNodes.length;
+  w.el('results-filter').value='won'; w.el('results-filter').fire('change'); await settle();
+  const filtered=take(w,'/codes?');
+  const filtering=filtered.url.includes('status=won') && filtered.url.includes('offset=0');
+  answer(filtered,{total:26,filtered_total:1,rows:[rows[0]]}); await settle();
+  const unchanged=w.el('results-summary').textContent===checked.summary;
+  w.el('results-filter').value=''; w.el('results-filter').fire('change'); await settle();
+  const stale=take(w,'/codes?');
+  await pick(w,'RUN_B','succeeded');
+  answer(take(w,'/api/codes'),codesReport('RUN_B')); await settle();
+  answer(stale,{error:{message:'Old run unavailable'}},422); await settle();
+  return {before,rowSelector,focusedRow,checked,pinned,finalPage,filtering,unchanged,
+    staleError:w.el('results-error').textContent,hidden:w.el('results-body').hidden,
+    run:w.el('s1-state').textContent};
+};
+
+
+scenarios.direct_saved_code_actions = async () => {
+  const w = await start();
+  await pick(w,'RUN_A','succeeded');
+  const report=codesReport('RUN_A'); report.saved_count=report.codes.length;
+  report.codes.forEach((ticket,i)=>ticket.row_id='saved:'+i);
+  answer(take(w,'/api/codes'),report); await settle();
+  const summary=w.el('s1-cards').childNodes[0].childNodes[0];
+  const actions=summary.childNodes.find(el=>el.className==='ticket-actions');
+  actions.childNodes.find(el=>el.textContent==='Check result').fire('click'); await settle();
+  answer(take(w,'/api/results/RUN_A'),{error:{code:'report_not_found',message:'No report'}},404); await settle();
+  answer(take(w,'/codes?'),{total:report.saved_count,rows:[],input_digest:'saved'}); await settle();
+  const single=take(w,'/api/results/RUN_A'); const selected=single.body.row_id;
+  answer(single,{job_id:'direct-one'},202); await settle();
+  answer(take(w,'/api/results/jobs/direct-one'),{state:'failed',error:{message:'No source'}}); await settle();
+  w.el('s1-check-results').fire('click'); await settle();
+  const all=take(w,'/api/results/RUN_A'); const allBody=all.body;
+  answer(all,{job_id:'direct-all'},202); await settle();
+  answer(take(w,'/api/results/jobs/direct-all'),{state:'failed',error:{message:'No source'}}); await settle();
+  const displayedCode=summary.childNodes[0].childNodes[1].textContent;
+  const expected=report.codes.find(ticket=>ticket.raw.code===displayedCode).row_id;
+  return {selected,expected,allBody,copyPresent:actions.childNodes.some(el=>el.textContent==='Copy'),
+    label:w.el('s1-check-results').textContent};
 };
 
 async function main() {

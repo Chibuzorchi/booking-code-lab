@@ -1,0 +1,70 @@
+{
+  "fixture": {
+    "id": 1557443,
+    "referee": "Thomas Bramall",
+    "timezone": "UTC",
+    "date": "2026-10-23T19:00:00+00:00",
+    "timestamp": 1792782000,
+    "periods": {
+      "first": null,
+      "second": null
+    },
+    "venue": {
+      "id": 545,
+      "name": "Portman Road Stadium",
+      "city": "Ipswich"
+    },
+    "status": {
+      "long": "Match Finished",
+      "short": "FT",
+      "elapsed": 90,
+      "extra": null
+    }
+  },
+  "league": {
+    "id": 39,
+    "name": "Premier League",
+    "country": "England",
+    "logo": "https://media.api-sports.io/football/leagues/39.png",
+    "flag": "https://media.api-sports.io/flags/gb-eng.svg",
+    "season": 2026,
+    "round": "Regular Season - 8",
+    "standings": true
+  },
+  "teams": {
+    "home": {
+      "id": 57,
+      "name": "Ipswich",
+      "logo": "https://media.api-sports.io/football/teams/57.png",
+      "winner": null
+    },
+    "away": {
+      "id": 65,
+      "name": "Nottingham Forest",
+      "logo": "https://media.api-sports.io/football/teams/65.png",
+      "winner": null
+    }
+  },
+  "goals": {
+    "home": 1,
+    "away": 1
+  },
+  "score": {
+    "halftime": {
+      "home": 1,
+      "away": 1
+    },
+    "fulltime": {
+      "home": 1,
+      "away": 1
+    },
+    "extratime": {
+      "home": null,
+      "away": null
+    },
+    "penalty": {
+      "home": null,
+      "away": null
+    }
+  }
+}

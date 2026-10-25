@@ -225,6 +225,10 @@ class APITests(RegistryTestBase):
                 reg.saved_codes_snapshot.return_value = (Path('snapshot.json'), snapshot, False)
                 reg.committed_extract_snapshot.return_value = (Path('snapshot.json'), snapshot)
                 _, listing = dispatch(reg, 'POST', '/api/codes', {'run_id': 'history'}, {})
+                from portfolio.results_tracking.results_api import list_saved_codes
+                saved_rows = list_saved_codes(reg, 'history')['rows']
+                self.assertEqual(listing['codes'][0]['row_id'], saved_rows[0]['row_id'])
+                self.assertEqual(listing['expired_codes'][0]['row_id'], saved_rows[1]['row_id'])
                 self.assertEqual(listing['saved_count'], 3)
                 self.assertEqual(listing['pool_size'], 1)
                 self.assertEqual(listing['expired_count'], 1)

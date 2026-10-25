@@ -1,0 +1,226 @@
+{
+  "network_enabled": false,
+  "aliases": [
+    {
+      "namespace": "sportybet_competition",
+      "display_name": "England \u00b7 Premier League",
+      "canonical": "england:premier-league"
+    },
+    {
+      "namespace": "football_data_competition",
+      "display_name": "England \u00b7 Premier League",
+      "canonical": "england:premier-league"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Arsenal",
+      "canonical": "england:first-team:Arsenal"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Arsenal",
+      "canonical": "england:first-team:Arsenal"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Aston Villa",
+      "canonical": "england:first-team:Aston Villa"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Aston Villa",
+      "canonical": "england:first-team:Aston Villa"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Bournemouth",
+      "canonical": "england:first-team:Bournemouth"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Bournemouth",
+      "canonical": "england:first-team:Bournemouth"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Brentford",
+      "canonical": "england:first-team:Brentford"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Brentford",
+      "canonical": "england:first-team:Brentford"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Brighton",
+      "canonical": "england:first-team:Brighton"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Brighton",
+      "canonical": "england:first-team:Brighton"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Chelsea",
+      "canonical": "england:first-team:Chelsea"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Chelsea",
+      "canonical": "england:first-team:Chelsea"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Coventry City",
+      "canonical": "england:first-team:Coventry City"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Coventry",
+      "canonical": "england:first-team:Coventry City"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Crystal Palace",
+      "canonical": "england:first-team:Crystal Palace"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Crystal Palace",
+      "canonical": "england:first-team:Crystal Palace"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Everton",
+      "canonical": "england:first-team:Everton"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Everton",
+      "canonical": "england:first-team:Everton"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Fulham",
+      "canonical": "england:first-team:Fulham"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Fulham",
+      "canonical": "england:first-team:Fulham"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Hull City",
+      "canonical": "england:first-team:Hull City"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Hull",
+      "canonical": "england:first-team:Hull City"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Ipswich Town",
+      "canonical": "england:first-team:Ipswich Town"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Ipswich",
+      "canonical": "england:first-team:Ipswich Town"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Leeds United",
+      "canonical": "england:first-team:Leeds United"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Leeds",
+      "canonical": "england:first-team:Leeds United"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Liverpool",
+      "canonical": "england:first-team:Liverpool"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Liverpool",
+      "canonical": "england:first-team:Liverpool"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Man City",
+      "canonical": "england:first-team:Man City"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Man City",
+      "canonical": "england:first-team:Man City"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Man Utd",
+      "canonical": "england:first-team:Man Utd"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Man United",
+      "canonical": "england:first-team:Man Utd"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Newcastle",
+      "canonical": "england:first-team:Newcastle"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Newcastle",
+      "canonical": "england:first-team:Newcastle"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Nottingham Forest",
+      "canonical": "england:first-team:Nottingham Forest"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Nott'm Forest",
+      "canonical": "england:first-team:Nottingham Forest"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Sunderland AFC",
+      "canonical": "england:first-team:Sunderland AFC"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Sunderland",
+      "canonical": "england:first-team:Sunderland AFC"
+    },
+    {
+      "namespace": "sportybet_team",
+      "display_name": "Tottenham",
+      "canonical": "england:first-team:Tottenham"
+    },
+    {
+      "namespace": "football_data_team",
+      "display_name": "Tottenham",
+      "canonical": "england:first-team:Tottenham"
+    }
+  ],
+  "verified_mappings": [],
+  "ticket_structures": [],
+  "football_data_files": [
+    {
+      "path": "../../archive/E0.csv",
+      "division": "E0",
+      "season": "2026-27",
+      "competition": "England \u00b7 Premier League",
+      "downloaded_at": "2026-10-24"
+    }
+  ]
+}

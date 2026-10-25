@@ -1,0 +1,766 @@
+--- a/ticket-analysis/portfolio/app.html
++++ b/ticket-analysis/portfolio/app.html
+@@ -2,93 +2,105 @@
+ <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+ <title>Harvest → Distinct → De-correlate · Historical results</title>
+ <style>
+-:root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#182b29;background:#f4f6f3;font-size:15px;color-scheme:light}
+-*{box-sizing:border-box}body{margin:0}button,input,select,textarea{font:inherit}button,select{cursor:pointer}
+-button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid #bb690c;outline-offset:3px}
+-header{background:#123e35;color:#fff;padding:32px max(24px,calc((100vw - 1120px)/2))}
+-.eyebrow{text-transform:uppercase;letter-spacing:.15em;font-size:12px;font-weight:700;color:#b4d5c5}
+-h1{font-size:32px;margin:8px 0;font-weight:650;letter-spacing:-.5px}
+-#historical-results p{overflow-wrap:anywhere}
+-header p{color:#d1e1d8;max-width:760px;line-height:1.6;margin:0}
+-main{max-width:1120px;margin:auto;padding:24px 24px 64px}
+-.panel{background:#fff;border:1px solid #dce4dc;border-radius:14px;margin-bottom:18px;padding:22px}
+-.panel[aria-disabled=true]{opacity:.62}
+-h2{font-size:19px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+-h3{font-size:15px;margin:22px 0 0}
+-.step{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#123e35;color:#fff;font-size:13px;font-weight:700}
+-fieldset{border:0;margin:0;padding:0}
+-.grid{display:flex;gap:14px;align-items:end;flex-wrap:wrap;margin-top:14px}
+-label{display:flex;flex-direction:column;gap:7px;font-size:13px;font-weight:600}
+-label span{font-weight:400;color:#5c6c64;font-size:12px}
+-input,select{padding:10px;border:1px solid #b8c8bd;border-radius:7px;background:#fff;color:#182b29;min-height:44px;min-width:120px}
+-button{border:1px solid #b8c8bd;background:#f5f8f4;border-radius:7px;padding:10px 14px;color:#184b3e;min-height:44px;font-weight:600}
+-button.go{background:#1c5344;border-color:#1c5344;color:#fff}
+-button:disabled{opacity:.45;cursor:default}
++__UI_CSS__
++h2{display:flex;align-items:center;gap:var(--space-3)}
++.step{display:inline-grid;place-items:center;flex:none;width:32px;height:32px;border-radius:50%;background:var(--accent);color:#fff;font-size:14px;font-weight:600}
++fieldset{border:0;margin:0;padding:0;min-width:0}
++.form-section{margin-top:var(--space-6)}
++.form-section h3{margin:0 0 var(--space-4)}
++.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-4)}
++.form-grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}
++.form-grid label{display:grid;grid-template-rows:auto 1fr auto;align-items:start}
++.form-grid label:has(select){display:flex;justify-content:space-between}
++.form-grid input,.form-grid select{width:100%}
++.actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);margin-top:var(--space-6)}
++label.check{max-width:none;margin-top:var(--space-3)}
++label.check .row{display:flex;align-items:center;gap:var(--space-2);min-height:44px;font-size:14px;font-weight:500;color:var(--ink)}
++/* The native checkbox itself is the 44px target; its label is also clickable. */
++label.check input{appearance:none;width:44px;height:44px;min-width:44px;min-height:44px;flex:none;margin:0;cursor:pointer;border:0;background:linear-gradient(#fff,#fff) center/20px 20px no-repeat}
++label.check input::before{content:"";display:block;width:20px;height:20px;margin:12px;border:1px solid #78877e;border-radius:4px}
++label.check input:checked::before{content:"✓";background:var(--accent);border-color:var(--accent);color:white;text-align:center;font-size:16px;line-height:18px}
++label.check input:disabled{cursor:not-allowed}
++@media(forced-colors:active){label.check input{appearance:auto;background:none}label.check input::before{display:none}}
++.bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:var(--space-6) 0 0}
++.bar p{margin:0;font-size:14px;color:var(--muted)}
++.ticket summary{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;align-items:center}
++.ticket summary::-webkit-details-marker{display:none}
++.ticket-code{flex:1 1 160px;min-width:0;overflow-wrap:anywhere}
++.ticket-metric{flex:0 1 auto;min-width:64px}
++.ticket-actions{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-2);max-width:100%;margin-left:auto}
++.ticket-actions button{white-space:nowrap}
++.ticket-history{flex:1 1 100%;display:flex;gap:var(--space-2);align-items:baseline;font-size:14px;color:var(--muted)}
++.ticket-history small{margin:0!important}
++.ticket summary small{display:block;margin-bottom:var(--space-1)}
++.ticket summary strong{font-family:ui-monospace,monospace}
++.chev{color:var(--muted)}.ticket[open] .chev{transform:rotate(90deg)}
++td small{display:block;margin-top:var(--space-1)}td.n{text-align:right}
++.error{margin:var(--space-3) 0 0;padding:var(--space-3) var(--space-4);border-radius:8px;background:#fdecec;color:#8a1c1c;font-size:14px}
++.ok{color:#1d6b3a;font-weight:600}.bad{color:#8a4a0c;font-weight:600}
+ button.is-copied{background:#1d6b3a;color:#fff;border-color:#1d6b3a}
+ button.is-copy-failed{background:#fbe6cf;color:#8a4a0c;border-color:#bb690c}
+-.copy-fallback{display:block;margin-top:8px;width:100%;max-width:100%;font:14px/1.4 ui-monospace,monospace;padding:8px;border:1px solid #bb690c;border-radius:6px;background:#fff8ef;color:#182b29}
++.copy-fallback{display:block;margin-top:var(--space-2);width:100%;max-width:100%;font:14px/1.5 ui-monospace,monospace;padding:var(--space-2);border:1px solid #bb690c;border-radius:8px;background:#fff8ef;color:var(--ink)}
+ summary .copy-fallback{grid-column:1/-1}
+-.notice{margin:8px 0 0;color:#5c6c64;font-size:13px;line-height:1.6}
+-.error{margin:10px 0 0;padding:11px 13px;border-radius:8px;background:#fdecec;border:1px solid #e3b3b3;color:#8a1c1c;font-size:13px;line-height:1.5}
+-.ok{color:#1d6b3a;font-weight:600}.bad{color:#8a4a0c;font-weight:600}
+-.facts{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0 0;padding:0;list-style:none}
+-.facts li{background:#f4f7f3;border:1px solid #e0e8e0;border-radius:9px;padding:9px 12px;min-width:104px}
+-.facts b{display:block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6c64;font-weight:700}
+-.facts span{font-variant-numeric:tabular-nums;font-size:17px}
+-.bar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:18px 0 0;flex-wrap:wrap}
+-.bar p{margin:0;font-size:13px;color:#5c6c64}
+-.ticket{border:1px solid #dce4dc;border-radius:9px;margin-top:9px;overflow:hidden}
+-.ticket summary{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;gap:14px;padding:14px;align-items:center}
+-.ticket-code{flex:1 1 160px;min-width:0;overflow-wrap:anywhere}
+-.ticket-metric{flex:0 1 auto;min-width:64px}
+-.ticket-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;max-width:100%;margin-left:auto}
+-.ticket-history{flex:1 1 100%;display:flex;gap:8px;align-items:baseline;font-size:13px;color:#5c6c64}
+-.ticket-history small{margin:0!important}.ticket-actions button{white-space:nowrap}
+-.ticket summary::-webkit-details-marker{display:none}.ticket summary:hover{background:#f6f9f5}
+-.ticket[open] summary{background:#edf4ed;border-bottom:1px solid #dce4dc}
+-.ticket summary small{display:block;font-size:11px;color:#5c6c64;margin-bottom:4px}
+-.ticket summary strong{font-family:ui-monospace,monospace;font-size:16px}
+-.n{font-variant-numeric:tabular-nums}.chev{color:#527363}.ticket[open] .chev{transform:rotate(90deg)}
+-.detail{padding:6px 14px 14px}.scroll{overflow-x:auto}
+-table{border-collapse:collapse;width:100%;text-align:left;font-size:13px}
+-th{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6c64;background:#f7f9f5}
+-th,td{padding:10px 9px;border-bottom:1px solid #e7ece4;vertical-align:top}
+-td small{display:block;color:#67796d;margin-top:4px}td.n{text-align:right}
+-details.more{margin-top:16px}details.more>summary{cursor:pointer;font-weight:600;font-size:13px;color:#294d3d}
+-label.check{max-width:270px}label.check .row{display:flex;align-items:center;gap:9px;min-height:44px}
+-label.check input{width:18px;height:18px;min-width:0;min-height:0;flex:none;accent-color:#1c5344}
+-noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin-bottom:18px}
+-@media(max-width:700px){h1{font-size:26px}main{padding:16px 12px 48px}.panel{padding:16px}
+-.ticket summary{gap:12px}.ticket-code{flex-basis:100%}.ticket-actions{margin-left:0}.chev{display:none}label{width:100%}input,select{width:100%}}
++.run-browser{display:grid;gap:var(--space-4);margin-top:var(--space-4)}
++.run-browser .actions{margin-top:0}
++#runs{width:100%;height:248px;padding:var(--space-1);font-size:14px}
++#runs option{min-height:44px;padding:var(--space-3);white-space:normal;overflow-wrap:anywhere}
++#runs-search{width:100%}
++.metadata,.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr));gap:var(--space-4);margin:var(--space-4) 0}
++.metadata dt,.metric-grid dt{font-size:12px;color:var(--muted)}
++.metadata dd,.metric-grid dd{margin:var(--space-1) 0 0;overflow-wrap:anywhere}
++.metric-grid dd{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums}
++.metric-grid small{display:block;font-size:12px;font-weight:400;color:var(--muted)}
++.result-filter{max-width:320px;margin:var(--space-6) 0 var(--space-4)}
++.result-card{padding:var(--space-6) 0;border-bottom:1px solid var(--line)}
++.result-heading{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-3);margin-bottom:var(--space-3)}
++.result-card h3{margin:0;overflow-wrap:anywhere}
++.status-badge{font-size:12px;font-weight:600;background:#eef2ef;color:var(--ink);padding:var(--space-1) var(--space-2);border-radius:8px}
++.result-card p{font-size:14px;color:var(--muted)}
++.selection-evidence{margin-top:var(--space-6)}
++#results-job{font-size:14px;color:var(--muted);overflow-wrap:anywhere}
++noscript{display:block;padding:var(--space-4);background:#fff5e3;border-radius:8px;margin-bottom:var(--space-4)}
++@media(max-width:700px){.form-grid,.form-grid.three{grid-template-columns:1fr}.ticket-code{flex-basis:100%}.ticket-actions{margin-left:0}.chev{display:none}.actions button{flex:1 1 auto}#runs{font-size:16px}.result-filter{max-width:none}}
+ </style></head><body>
+ <header>
+   <div class="eyebrow">Local run console · paper only</div>
+   <h1>Harvest → Distinct → De-correlate</h1>
+-  <p>Three stages against the local API on this machine. Nothing here places a bet or stakes money.
+-  Every odds figure is the same basis the scan recorded and is labelled <b>recorded, not verified payout</b>.</p>
++  <p>Find codes, identify distinct selections, and reduce overlap. Nothing here places a bet or stakes money.
++  Odds are <b>recorded, not verified payout</b>.</p>
+ </header>
+ <main>
+ <noscript>This console needs JavaScript: each stage is a request to the local API.</noscript>
+ 
+ <section class="panel" id="s1" aria-labelledby="s1-h">
+   <h2 id="s1-h"><span class="step">1</span> Harvest</h2>
+-  <p class="notice">Scans run as a separate worker process, one at a time per provider. Mutation depth is fixed at 3.
+-  Booking a fresh code opens a real browser against the provider and takes a while before the scan itself starts; it books a coupon, it never stakes money.</p>
++  <p class="notice">Choose a seed and set your limits to find codes. One scan can run per provider.</p>
+   <form id="scan-form">
+     <fieldset id="s1-fields">
+-      <div class="grid">
+-        <label>Provider<select id="provider"><option value="bet9ja">bet9ja</option><option value="sportybet">sportybet</option></select></label>
+-        <label>Seed code<span id="seed-hint">7 characters, case kept</span><input id="seed" autocapitalize="off" autocomplete="off" spellcheck="false" required></label>
+-        <label class="check"><span class="row"><input id="fresh_seed" type="checkbox">Book a fresh code</span><span>The run opens the provider in a browser, books one coupon, and scans from that code.</span></label>
+-        <label>Min odds<span>blank = no floor</span><input id="min_odds" type="number" min="0" step="any"></label>
+-        <label>Max odds<span>blank = 350,000</span><input id="max_odds" type="number" min="0" step="any"></label>
+-        <label>How many codes<span>blank/0 = uncapped</span><input id="want_count" type="number" min="0" step="1"></label>
+-        <button class="go" id="s1-run" type="submit">Run scan</button>
+-        <button id="s1-cancel" type="button" disabled>Cancel</button>
+-      </div>
+-      <details class="more"><summary>Advanced</summary>
++      <section class="form-section" aria-labelledby="source-heading">
++        <h3 id="source-heading">Choose a source</h3>
++        <div class="form-grid">
++          <label>Provider<select id="provider"><option value="bet9ja">bet9ja</option><option value="sportybet">sportybet</option></select></label>
++          <label>Seed code<span id="seed-hint">7 characters, case kept</span><input id="seed" aria-describedby="seed-hint" autocapitalize="off" autocomplete="off" spellcheck="false" required></label>
++        </div>
++        <label class="check"><span class="row"><input id="fresh_seed" type="checkbox" aria-describedby="fresh-hint">Book a fresh code</span><span id="fresh-hint">Opens the provider in a browser and books a coupon before scanning; it never stakes money. This can take a while.</span></label>
++      </section>
++      <section class="form-section" aria-labelledby="limits-heading">
++        <h3 id="limits-heading">Set scan limits</h3>
++        <div class="form-grid three">
++          <label>Min odds<span id="min-hint">Leave blank for no minimum</span><input id="min_odds" aria-describedby="min-hint" type="number" min="0" step="any"></label>
++          <label>Max odds<span id="max-hint">Defaults to 350,000</span><input id="max_odds" aria-describedby="max-hint" type="number" min="0" step="any"></label>
++          <label>How many codes<span id="count-hint">Leave blank or enter 0 for no limit</span><input id="want_count" aria-describedby="count-hint" type="number" min="0" step="1"></label>
++        </div>
++      </section>
++      <details class="more"><summary>Adjust advanced limits</summary>
++        <p class="notice">Mutation depth is fixed at 3.</p>
+         <div class="grid"><label>Try budget<span>codes to attempt; blank = 25,000</span><input id="try_budget" type="number" min="1" step="1"></label></div>
+       </details>
++      <div class="actions">
++        <button class="go" id="s1-run" type="submit">Start scan</button>
++        <button id="s1-cancel" type="button" disabled>Cancel scan</button>
++      </div>
+     </fieldset>
+   </form>
+   <p class="error" id="s1-error" hidden></p>
+@@ -111,12 +123,16 @@
+     <div id="s1-cards"></div>
+     <div class="bar" id="s1-pager" hidden><button id="s1-prev" type="button">‹ Prev</button><p id="s1-page-info"></p><button id="s1-next" type="button">Next ›</button></div>
+   </div>
+-  <details class="more" id="s1-history"><summary>Earlier runs on this machine</summary>
+-    <div class="grid">
+-      <label>Run<select id="runs"><option value="">— none loaded —</option></select></label>
+-      <button id="runs-refresh" type="button">Refresh list</button>
+-      <button id="runs-load" type="button">Use this run</button>
+-      <button id="runs-check-results" type="button">Check selected run’s results</button>
++  <details class="more" id="s1-history"><summary>Browse saved runs</summary>
++    <div class="run-browser">
++      <label>Find a saved run<input id="runs-search" type="search" placeholder="Search date, status, seed or run ID" aria-controls="runs"></label>
++      <label>Choose a run<span id="runs-help">Date · Status · Seed</span><select id="runs" size="5" aria-describedby="runs-help runs-note"><option value="">— none loaded —</option></select></label>
++      <dl id="runs-details" class="metadata" hidden></dl>
++      <div class="actions">
++        <button class="go" id="runs-load" type="button" disabled>Open run</button>
++        <button id="runs-check-results" type="button" disabled>Check run results</button>
++        <button class="quiet" id="runs-refresh" type="button">Reload runs</button>
++      </div>
+     </div>
+     <p class="notice" id="runs-note">Only a run that committed an extract can feed stages 2 and 3.</p>
+   </details>
+@@ -124,22 +140,32 @@
+ 
+ <section class="panel" id="historical-results" aria-labelledby="results-heading">
+   <h2 id="results-heading">Historical results</h2>
+-  <p class="notice">Open an earlier run above to check its original saved codes. Started games and overlapping codes are included.</p>
+-  <div class="grid">
++  <p class="notice">Browse saved runs above, then open a run to review its original codes. Started games and overlapping codes are included.</p>
++  <div class="actions">
++    <button class="go" id="results-check-all" type="button" disabled>Check all results</button>
+     <button id="results-open" type="button" disabled>Open saved results</button>
+-    <button id="results-check-all" type="button" disabled>Check all results</button>
+-    <button id="results-refresh" type="button" disabled>Refresh all results</button>
+-    <button id="results-cancel" type="button" disabled>Cancel result check</button>
+-    <label class="check"><span>For a stopped run only</span><span class="row"><input id="results-partial" type="checkbox"> Use incomplete saved history</span></label>
++    <button id="results-cancel" type="button" disabled>Cancel check</button>
+   </div>
++  <details class="more"><summary>More result options</summary>
++    <p class="notice">Refresh requests new evidence for every saved code. Incomplete history is available for stopped runs.</p>
++    <div class="actions">
++      <button id="results-refresh" type="button" disabled>Refresh all results</button>
++      <label class="check"><span class="row"><input id="results-partial" type="checkbox">Include incomplete saved history</span></label>
++    </div>
++  </details>
+   <p id="results-job" role="status" aria-live="polite">Choose a saved run first.</p>
+   <p id="results-error" class="error" hidden></p>
+   <div id="results-body" hidden>
+     <p id="results-summary" class="notice"></p>
+-    <p id="results-rates" class="notice"></p>
+-    <p id="results-evidence" class="notice"></p>
++    <ul id="results-counts" class="facts" aria-label="Code outcomes"></ul>
++    <dl id="results-rates" class="metric-grid"></dl>
++    <p class="notice">Unknown outcomes are not losses. Historical rates are not a forecast.</p>
++    <details class="more"><summary>Review coverage and source evidence</summary>
++      <dl id="results-evidence" class="metadata"></dl>
++      <p class="notice">Ticket types, missing source access and unsupported markets can prevent a confirmed ticket result. Expand a code to inspect its selections.</p>
++    </details>
+     <button id="results-show-all" type="button" hidden>Show all saved codes</button>
+-    <label>Show outcomes<select id="results-filter">
++    <label class="result-filter">Filter outcomes<select id="results-filter">
+       <option value="">All saved codes</option><option value="won">Won</option><option value="lost">Lost</option>
+       <option value="void">Void</option><option value="pending">Pending</option>
+       <option value="unresolved">Unresolved</option><option value="not_checked">Not checked</option>
+@@ -169,7 +195,7 @@
+   <div class="bar" id="s2-bar" hidden><p id="s2-count"></p><button id="s2-copy-all" type="button">Copy shown codes</button></div>
+   <div id="s2-cards"></div>
+   <div class="bar" id="s2-pager" hidden><button id="s2-prev" type="button">‹ Prev</button><p id="s2-page-info"></p><button id="s2-next" type="button">Next ›</button></div>
+-  <details class="more" id="s2-more" hidden><summary>Most-reused game + option</summary><div class="scroll" id="s2-top"></div></details>
++  <details class="more" id="s2-more" hidden><summary>Review most reused selections</summary><div class="scroll" id="s2-top"></div></details>
+ </section>
+ 
+ <section class="panel" id="s3" aria-labelledby="s3-h" aria-disabled="true">
+@@ -189,7 +215,7 @@
+   <p class="notice" id="s3-subset" hidden></p>
+   <div class="bar" id="s3-bar" hidden><p id="s3-count"></p><button id="s3-copy-all" type="button">Copy selected codes</button></div>
+   <div id="s3-cards"></div>
+-  <details class="more" id="s3-more" hidden><summary>Why codes were left out</summary><div class="scroll" id="s3-rejected"></div></details>
++  <details class="more" id="s3-more" hidden><summary>Review excluded codes</summary><div class="scroll" id="s3-rejected"></div></details>
+ </section>
+ </main>
+ <script>__COPY_JS__</script>
+@@ -212,6 +238,7 @@
+ let gen = 0;                            // bumped whenever the selection changes
+ let poller = null, pollGen = -1;
+ let historyRequest = 0;
++let runHistory = [];
+ const analysisRequest = {s1: null, s2: null, s3: null};
+ 
+ /* Every reply is checked against the generation it was issued under. Anything in
+@@ -403,7 +430,7 @@
+     lock('s2', true, 'Waiting for scan submission.');
+   }
+   if (view.error) fail('s1-error', view.error);
+-  $('runs-load').disabled = $('runs').disabled || Boolean(view.submission);
++  runSelectionControls();
+ }
+ 
+ function switchProvider() {
+@@ -571,31 +598,72 @@
+   }
+ }
+ 
++function runDate(status) {
++  const stamp = status.started_at || status.created_at;
++  if (stamp) {
++    const date = new Date(stamp);
++    if (!Number.isNaN(date.getTime())) return date.toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'});
++  }
++  const match = status.run_id.match(/(\d{4})(\d{2})(\d{2})[-T_](\d{2})(\d{2})(\d{2})/);
++  return match ? `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6]}` : 'Date unavailable';
++}
++function metadataItem(list, label, value) {
++  const item = node('div');
++  item.append(node('dt', label), node('dd', String(value == null ? 'Unavailable' : value)));
++  list.append(item);
++}
++function runSelectionControls() {
++  const unavailable = $('runs').disabled || !$('runs').value || Boolean(view.submission);
++  $('runs-load').disabled = unavailable;
++  $('runs-check-results').disabled = unavailable || Boolean(view.results && view.results.job);
++  const selected = runHistory.find(run => run.run_id === $('runs').value && run.provider === provider);
++  const details = $('runs-details'); details.replaceChildren(); details.hidden = !selected;
++  if (selected) {
++    for (const [label, value] of [['Date', runDate(selected)], ['Status', resultReason(selected.state)],
++      ['Seed', seedText(selected)], ['Run ID', selected.run_id]]) metadataItem(details, label, value);
++  }
++}
++function filterRuns() {
++  const select = $('runs'), previous = select.value;
++  const query = $('runs-search').value.trim().toLocaleLowerCase();
++  const matching = runHistory.filter(run => run.provider === provider &&
++    [run.run_id, runDate(run), run.state, resultReason(run.state), seedText(run)].join(' ').toLocaleLowerCase().includes(query));
++  select.replaceChildren(node('option', matching.length ? 'Choose a saved run' : 'No matching runs'));
++  select.firstChild.value = '';
++  for (const status of matching) {
++    const option = node('option', `${runDate(status)} · ${resultReason(status.state)} · ${seedText(status)}`);
++    option.value = status.run_id;
++    select.append(option);
++  }
++  select.value = matching.some(run => run.run_id === previous) ? previous : '';
++  $('runs-note').textContent = `${matching.length} of ${runHistory.length} saved runs for ${provider}. Only runs with a committed extract can feed stages 2 and 3.`;
++  runSelectionControls();
++}
+ async function refreshRuns() {
+   fail('s1-error', view.error || '');
+   const request = ++historyRequest, which = provider;
+   const select = $('runs');
+-  select.replaceChildren(node('option', '— loading runs —'));
++  runHistory = [];
++  select.replaceChildren(node('option', 'Loading runs…'));
+   select.firstChild.value = '';
+   select.value = '';
+   select.disabled = true;
+-  $('runs-load').disabled = true;
++  $('runs-search').value = '';
++  $('runs-search').disabled = true;
++  runSelectionControls();
+   try {
+     const history = await api('GET', '/api/runs?provider=' + encodeURIComponent(which));
+     if (request !== historyRequest || which !== provider) return;
+-    select.replaceChildren(node('option', history.runs.length ? '— pick a run —' : '— no runs yet —'));
++    runHistory = history.runs.filter(status => status.provider === which);
++    select.disabled = false;
++    $('runs-search').disabled = false;
++    filterRuns();
++  } catch (e) {
++    if (request !== historyRequest || which !== provider) return;
++    select.replaceChildren(node('option', 'Could not load runs'));
+     select.firstChild.value = '';
+-    for (const status of history.runs.filter(status => status.provider === which)) {
+-      const option = node('option', `${status.run_id} · ${status.state} · seed ${seedText(status)}`);
+-      option.value = status.run_id;
+-      select.append(option);
+-    }
+-    select.disabled = false;
+-    $('runs-load').disabled = Boolean(view.submission);
+-    $('runs-note').textContent = `${history.runs.length} run(s) recorded for ${which}.`
+-      + ' Only a run that committed an extract can feed stages 2 and 3.';
+-  } catch (e) {
+-    if (request === historyRequest && which === provider) fail('s1-error', e.message);
++    $('runs-note').textContent = 'Reload runs to try again.';
++    fail('s1-error', e.message);
+   }
+ }
+ 
+@@ -737,7 +805,7 @@
+   $('results-cancel').disabled = !busy;
+   $('results-partial').disabled = busy;
+   $('s1-check-results').disabled = !run || busy || !view.codes || !view.codes.saved_count;
+-  $('runs-check-results').disabled = Boolean(view.submission) || busy;
++  runSelectionControls();
+   for (const button of $('s1-cards').querySelectorAll('button[data-result-action]')) button.disabled = busy;
+   for (const button of $('results-cards').querySelectorAll('button')) button.disabled = busy;
+ }
+@@ -745,9 +813,6 @@
+   return gen === mine && view.results === state && view.run && view.run.run_id === state.run;
+ }
+ function resultReason(value) { return (value || '').replaceAll('_', ' '); }
+-function resultRate(label, rate) {
+-  return rate ? `${label}: ${rate.value == null ? 'unavailable' : (rate.value * 100).toFixed(2) + '%'} (${rate.numerator}/${rate.denominator})` : '';
+-}
+ async function openResults() {
+   if (!view.run) return;
+   const state = {run: view.run.run_id, partial: $('results-partial').checked,
+@@ -785,30 +850,53 @@
+   const c = state.summary && state.summary.counts;
+   $('results-body').hidden = false;
+   $('results-summary').textContent = c
+-    ? `${c.total} saved codes · ${c.won} won · ${c.lost} lost · ${c.void} void · ${c.pending} pending · ${c.unresolved} unresolved (including unchecked). ${state.summary.checked_count || 0} checked.`
++    ? `${c.total} saved codes · ${state.summary.checked_count || 0} checked`
+     : `${page.total} saved codes. Results have not been checked.`;
++  $('results-counts').replaceChildren();
++  if (c) for (const key of ['won', 'lost', 'void', 'pending', 'unresolved']) {
++    const item = node('li');
++    item.append(node('b', key === 'unresolved' ? 'Unresolved / unchecked' : key), node('span', num(c[key])));
++    $('results-counts').append(item);
++  }
+   const rates = state.summary && state.summary.percentages;
+-  $('results-rates').textContent = rates ? [resultRate('Confirmed wins / all saved codes', rates.confirmed_win_rate),
+-    resultRate('Wins among decided wins/losses', rates.decided_win_loss_rate),
+-    resultRate('Classification coverage', rates.classification_coverage)].filter(Boolean).join(' · ')
+-    + ' Unknown outcomes are not losses. These historical rates are not a forecast.' : '';
+-  $('results-evidence').textContent = (state.summary ? `Checked ${state.summary.created_at}. Revision ${state.revision}. ` : '')
+-    + ((state.summary ? state.summary.population_complete : page.population_complete) === false ? 'Incomplete saved history. ' : '')
+-    + (state.summary && Object.keys(state.summary.retrieval_errors || {}).length ? `${Object.keys(state.summary.retrieval_errors).length} date(s) have source limitations. ` : '')
+-    + (state.summary && state.summary.leg_counts ? 'Selection outcomes: ' + Object.entries(state.summary.leg_counts).map(([status, count]) => `${count} ${status}`).join(', ') + '. ' : '')
+-    + 'Ticket types, missing source access and unsupported markets can prevent a confirmed ticket result; inspect each code for its leg outcomes.';
++  $('results-rates').replaceChildren();
++  if (rates) for (const [label, rate] of [
++    ['Confirmed wins / all saved codes', rates.confirmed_win_rate],
++    ['Wins among decided wins/losses', rates.decided_win_loss_rate],
++    ['Classification coverage', rates.classification_coverage]]) {
++    if (!rate) continue;
++    const item = node('div');
++    const value = node('dd');
++    value.append(node('span', rate.value == null ? 'Unavailable' : (rate.value * 100).toFixed(2) + '%'),
++      node('small', `(${rate.numerator}/${rate.denominator})`));
++    item.append(node('dt', label), value);
++    $('results-rates').append(item);
++  }
++  const evidence = $('results-evidence'); evidence.replaceChildren();
++  if (state.summary) {
++    metadataItem(evidence, 'Checked', state.summary.created_at);
++    metadataItem(evidence, 'Revision', state.revision);
++    metadataItem(evidence, 'Dates with source limitations', Object.keys(state.summary.retrieval_errors || {}).length);
++    for (const [status, count] of Object.entries(state.summary.leg_counts || {}))
++      metadataItem(evidence, 'Selections: ' + resultReason(status), count);
++  }
++  metadataItem(evidence, 'Saved history',
++    (state.summary ? state.summary.population_complete : page.population_complete) === false ? 'Incomplete' : 'Complete');
+   const cards = $('results-cards'); cards.replaceChildren();
+   for (const row of page.rows) {
+     const original = row.original_ticket || {};
+-    const card = node('article', undefined, 'panel');
+-    card.append(node('h3', `${row.ticket_id || original.code || 'Saved row'} · ${row.checked ? row.status : 'not checked'}`));
++    const card = node('article', undefined, 'result-card');
++    const heading = node('div', undefined, 'result-heading');
++    heading.append(node('h3', row.ticket_id || original.code || 'Saved row'),
++      node('span', resultReason(row.checked ? row.status : 'not_checked'), 'status-badge'));
++    card.append(heading);
+     if (row.reason) card.append(node('p', resultReason(row.reason)));
+     if (row.proxy_all_legs_won) card.append(node('p', 'All selected legs won. This is not a confirmed ticket win while its structure is unverified.'));
+     const button = node('button', row.checked ? 'Check again' : 'Check result'); button.type = 'button';
+     button.disabled = Boolean(state.job);
+     button.onclick = () => checkResults(row.row_id);
+     card.append(button);
+-    const details = node('details'), summary = node('summary', 'Original picks and outcome evidence'); details.append(summary);
++    const details = node('details', undefined, 'more'), summary = node('summary', 'Review picks and outcome evidence'); details.append(summary);
+     if (row.structure_verification && row.structure_verification.evidence)
+       details.append(node('p', 'Ticket structure evidence: ' + row.structure_verification.evidence));
+     const rawLegs = Array.isArray(original.selections) ? original.selections.filter(s => s && typeof s === 'object') : [];
+@@ -817,16 +905,29 @@
+       pick: selection.pick, specifier: selection.specifier, kickoff: {raw: selection.kickoff}}, reason: 'not_checked'}));
+     for (const leg of legs) {
+       const selection = leg.selection || {};
+-      details.append(node('h4', selection.event_display || leg.leg_id || 'Selection'));
+-      details.append(node('p', [selection.league_display, selection.market, selection.pick, selection.specifier,
+-        selection.kickoff && selection.kickoff.raw].filter(Boolean).join(' · ')));
+-      details.append(node('p', `${leg.status || 'not checked'}${leg.reason ? ' · ' + resultReason(leg.reason) : ''}`));
++      const selectionBlock = node('section', undefined, 'selection-evidence');
++      selectionBlock.append(node('h4', selection.event_display || leg.leg_id || 'Selection'));
++      const fields = node('dl', undefined, 'metadata');
++      for (const [label, value] of [['League', selection.league_display], ['Market', selection.market],
++        ['Pick', selection.pick], ['Specifier', selection.specifier], ['Kickoff', selection.kickoff && selection.kickoff.raw],
++        ['Outcome', resultReason(leg.status || 'not_checked')], ['Reason', resultReason(leg.reason)]]) {
++        if (value) metadataItem(fields, label, value);
++      }
++      selectionBlock.append(fields); details.append(selectionBlock);
+       const f = leg.fixture;
+       if (f) {
+         const score = f.score;
+-        details.append(node('p', `${f.home_team} — ${f.away_team}: ${resultReason(f.state)}; regulation ${score ? score.home + '–' + score.away : 'unavailable'}`
+-          + (score && score.ht_home != null ? `; half-time ${score.ht_home}–${score.ht_away}` : '')));
+-        details.append(node('p', `Source ${f.provenance.source} / ${f.provenance.source_fixture_id}, observed ${f.provenance.fetched_at}. Match ${leg.match_tier}; rule ${leg.rule_id}.`));
++        for (const [label, value] of [['Fixture', `${f.home_team} — ${f.away_team}`],
++          ['Match state', resultReason(f.state)], ['Regulation score', score ? score.home + '–' + score.away : 'Unavailable'],
++          ['Half-time score', score && score.ht_home != null ? score.ht_home + '–' + score.ht_away : 'Unavailable']])
++          metadataItem(fields, label, value);
++        const source = node('details', undefined, 'more');
++        source.append(node('summary', 'Inspect source and matching evidence'));
++        const provenance = node('dl', undefined, 'metadata');
++        for (const [label, value] of [['Source', f.provenance.source], ['Fixture ID', f.provenance.source_fixture_id],
++          ['Observed', f.provenance.fetched_at], ['Match tier', leg.match_tier], ['Rule', leg.rule_id]])
++          metadataItem(provenance, label, value);
++        source.append(provenance); selectionBlock.append(source);
+       }
+       if (leg.retrieval_error) details.append(node('p', leg.retrieval_error.message));
+       for (const candidate of leg.candidates || []) details.append(node('p', `Review candidate: ${candidate.event}, ${candidate.kickoff} (${candidate.source} / ${candidate.source_fixture_id}).`));
+@@ -1286,6 +1387,8 @@
+ $('s1-cancel').addEventListener('click', cancelScan);
+ $('provider').addEventListener('change', switchProvider);
+ $('fresh_seed').addEventListener('change', seedHint);
++$('runs-search').addEventListener('input', filterRuns);
++$('runs').addEventListener('change', runSelectionControls);
+ $('runs-refresh').addEventListener('click', refreshRuns);
+ $('runs-load').addEventListener('click', loadRun);
+ $('s2-run').addEventListener('click', findDistinct);
+--- a/ticket-analysis/portfolio/pages.py
++++ b/ticket-analysis/portfolio/pages.py
+@@ -17,6 +17,11 @@
+     return Path(__file__).with_name(name).read_text(encoding="utf-8")
+ 
+ 
++def ui_css() -> str:
++    """Shared UI rules, inlined so exported reports also work offline."""
++    return _asset("ui.css")
++
++
+ def copy_js() -> str:
+     """The shared clipboard helper, ready to inline inside a <script> element."""
+     source = _asset("copy.js")
+@@ -29,7 +34,7 @@
+     """Substitute a page's __COPY_JS__ placeholder; refuse a page without one."""
+     if PLACEHOLDER not in page:
+         raise ValueError("page template has no __COPY_JS__ placeholder")
+-    return page.replace(PLACEHOLDER, copy_js())
++    return page.replace(PLACEHOLDER, copy_js()).replace("__UI_CSS__", ui_css())
+ 
+ 
+ def app_page() -> str:
+--- a/ticket-analysis/portfolio/distinct_page.py
++++ b/ticket-analysis/portfolio/distinct_page.py
+@@ -11,7 +11,7 @@
+ from pathlib import Path
+ 
+ from .contracts import odds_value
+-from .pages import copy_js
++from .pages import copy_js, ui_css
+ from .uniqueness import _bare_code, analyze_extract
+ 
+ PROVIDER_LABEL = {"bet9ja": "bet9ja", "sportybet": "sportybet"}
+@@ -56,28 +56,20 @@
+     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+ <meta name="viewport" content="width=device-width,initial-scale=1"><title>Distinct codes · {label}</title>
+ <style>
+-:root{{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#182b29;background:#f4f6f3}}*{{box-sizing:border-box}}body{{margin:0}}
+-header{{background:#123e35;color:#fff;padding:32px max(24px,calc((100vw - 1100px)/2))}}
+-.eyebrow{{text-transform:uppercase;letter-spacing:.15em;font-size:12px;font-weight:700;color:#b4d5c5}}
+-h1{{font-size:32px;margin:8px 0;font-weight:650}} header p{{color:#d1e1d8;max-width:720px;line-height:1.6;margin:0 0 14px}}
+-.bar{{display:flex;gap:10px}} button{{font:inherit;cursor:pointer}}
+-.allbtn{{border:1px solid #b4d5c5;background:#1c5344;color:#fff;border-radius:7px;padding:9px 14px;font-weight:600}}
+-main{{max-width:1100px;margin:auto;padding:24px}}
+-.ticket{{background:#fff;border:1px solid #dce4dc;border-radius:10px;margin-bottom:10px;overflow:hidden}}
+-.ticket summary{{list-style:none;cursor:pointer;display:grid;grid-template-columns:1fr 70px 130px 84px 20px;gap:14px;padding:16px;align-items:center}}
+-.ticket summary::-webkit-details-marker{{display:none}} .ticket summary:hover{{background:#f6f9f5}}
+-.ticket[open] summary{{background:#edf4ed;border-bottom:1px solid #dce4dc}}
+-summary small{{display:block;font-size:11px;color:#5c6c64;margin-bottom:4px}} summary strong{{font-family:ui-monospace,monospace;font-size:17px}}
+-.n{{font-variant-numeric:tabular-nums}} .chev{{color:#527363}} .ticket[open] .chev{{transform:rotate(90deg)}}
+-.copy{{border:1px solid #b8c8bd;background:#f5f8f4;border-radius:7px;padding:8px 10px;color:#184b3e;font-weight:600}}
++{ui_css()}
++.bar{{display:flex;flex-wrap:wrap;gap:var(--space-3);margin-top:var(--space-4)}}
++.ticket{{overflow:hidden}}
++.ticket summary{{list-style:none;cursor:pointer;display:grid;grid-template-columns:1fr 72px 136px 88px 24px;align-items:center}}
++.ticket summary::-webkit-details-marker{{display:none}}
++summary small{{display:block;margin-bottom:var(--space-1)}}
++summary strong{{font-family:ui-monospace,monospace}}
++.chev{{color:var(--muted)}}.ticket[open] .chev{{transform:rotate(90deg)}}
+ button.is-copied{{background:#1d6b3a;color:#fff;border-color:#1d6b3a}}
+ button.is-copy-failed{{background:#fbe6cf;color:#8a4a0c;border-color:#bb690c}}
+-.copy-fallback{{display:block;margin-top:8px;width:100%;font:14px/1.4 ui-monospace,monospace;padding:8px;border:1px solid #bb690c;border-radius:6px;background:#fff8ef;color:#182b29}}
++.copy-fallback{{display:block;margin-top:var(--space-2);width:100%;font:14px/1.5 ui-monospace,monospace;padding:var(--space-2);border:1px solid #bb690c;border-radius:8px;background:#fff8ef;color:var(--ink)}}
+ summary .copy-fallback{{grid-column:1/-1}}
+-.detail{{padding:8px 16px 16px}} table{{border-collapse:collapse;width:100%;text-align:left;font-size:13px}}
+-th{{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6c64;background:#f7f9f5}}
+-th,td{{padding:11px 9px;border-bottom:1px solid #e7ece4;vertical-align:top}} td small{{display:block;color:#67796d;margin-top:4px}} td.n{{text-align:right}}
+-@media(max-width:640px){{.ticket summary{{grid-template-columns:1fr 84px;gap:10px}}.chev{{display:none}}}}
++td small{{display:block;margin-top:var(--space-1)}}td.n{{text-align:right}}
++@media(max-width:640px){{.ticket summary{{grid-template-columns:1fr 88px}}.chev{{display:none}}}}
+ </style></head><body>
+ <header><div class="eyebrow">Phase 1 · {label}</div><h1>{n} fully distinct codes</h1>
+ <p>Out of {report['coupons']} eligible codes{band}, these {n} share <b>zero</b> games+options with any other code. The other {report['overlapping_codes']} overlap and are held for de-correlation.</p>
+--- a/ticket-analysis/portfolio/reporting.html
++++ b/ticket-analysis/portfolio/reporting.html
+@@ -2,16 +2,34 @@
+ <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+ <title>__TITLE__ · Results</title>
+ <style>
+-:root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#182b29;background:#f4f6f3;font-size:15px;color-scheme:light}*{box-sizing:border-box}body{margin:0}button,input,select{font:inherit}button,select{cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #bb690c;outline-offset:3px}header{background:#123e35;color:#fff;padding:36px max(24px,calc((100vw - 1180px)/2)) 32px}.eyebrow{text-transform:uppercase;letter-spacing:.15em;font-size:12px;font-weight:700;color:#b4d5c5}h1{font-size:36px;margin:10px 0;font-weight:650;letter-spacing:-1px}header p{color:#d1e1d8;max-width:720px;line-height:1.6;margin:0}main{max-width:1228px;margin:auto;padding:28px 24px 60px}h2{font-size:20px;margin:0 0 6px}.tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:3px 9px;border-radius:20px;margin-left:10px;vertical-align:middle}.tag-banker{background:#e2f0e4;color:#1d6b3a}.tag-longshot{background:#fbe6cf;color:#8a4a0c}a{color:#165e4e}header a{color:inherit}.panel{background:white;border:1px solid #dce4dc;border-radius:14px;margin-bottom:20px;padding:24px}.controls{display:flex;gap:16px;align-items:end;flex-wrap:wrap}label{display:flex;flex-direction:column;gap:8px;font-size:13px;font-weight:600}input,select{padding:11px;border:1px solid #b8c8bd;border-radius:7px;background:#fff;color:#182b29;min-height:44px}.search{flex:1;min-width:230px}.search input{width:100%}button,.button{border:1px solid #b8c8bd;background:#f5f8f4;border-radius:7px;padding:10px 14px;color:#184b3e;min-height:42px;font-weight:600}button:disabled{opacity:.45;cursor:default}.notice{margin:10px 0 0;color:#5c6c64;font-size:13px;line-height:1.6}.list-top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:18px 0}.list-top p{margin:0}.ticket{border:1px solid #dce4dc;border-radius:9px;margin-top:10px;overflow:hidden}.ticket summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(120px,1fr) 65px minmax(125px,1fr) minmax(125px,1fr) 20px;gap:16px;padding:18px;align-items:center}.ticket summary::-webkit-details-marker{display:none}.ticket summary:hover{background:#f6f9f5}.ticket[open] summary{background:#edf4ed;border-bottom:1px solid #dce4dc}.ticket summary strong{font-family:ui-monospace,monospace;font-size:17px}.ticket summary small{display:block;font-size:11px;color:#5c6c64;margin-bottom:5px}.ticket summary .value{font-variant-numeric:tabular-nums}.chevron{color:#527363}.ticket[open] .chevron{transform:rotate(90deg)}.detail{padding:20px}.detail-top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}.detail-top p{margin:0;line-height:1.8;font-size:13px;color:#5c6c64}.scroll{overflow:auto}table{border-collapse:collapse;width:100%;text-align:left;font-size:13px}th{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6c64;background:#f7f9f5}th,td{padding:13px 10px;border-bottom:1px solid #e7ece4;vertical-align:top}td small{display:block;color:#67796d;margin-top:5px}.empty{padding:36px;text-align:center;color:#5c6c64}.footer{font-size:13px;line-height:1.8;color:#5c6c64}.footer summary{cursor:pointer;font-weight:600;color:#294d3d}.footer code{background:#eaf0e7;padding:2px 5px;border-radius:3px}noscript{display:block;padding:20px;background:#fff5e3}@media(max-width:700px){h1{font-size:28px}main{padding:18px 12px}.panel{padding:16px}.ticket summary{grid-template-columns:1fr 55px;gap:12px;padding:14px}.chevron{display:none}.detail{padding:12px}.detail-top{align-items:start}.list-top{align-items:start;flex-direction:column}.controls label{width:100%}}
+-
+-.copy-fallback{display:block;margin-top:8px;width:100%;max-width:340px;font-family:ui-monospace,monospace;font-size:14px;padding:8px;border:1px solid #bb690c;border-radius:6px;background:#fff8ef;color:#182b29}
++__UI_CSS__
++.tag{display:inline-block;font-size:12px;font-weight:600;padding:var(--space-1) var(--space-2);border-radius:8px;margin-left:var(--space-2);vertical-align:middle}
++.tag-longshot{background:#fbe6cf;color:#80430b}
++.controls{display:flex;align-items:end;flex-wrap:wrap}
++.search{flex:1;min-width:0}.search input{width:100%}
++.list-top,.detail-top{display:flex;align-items:center;justify-content:space-between;margin:var(--space-4) 0}
++.list-top p,.detail-top p{margin:0}
++.ticket{overflow:hidden}
++.ticket summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(120px,1fr) 64px minmax(120px,1fr) minmax(120px,1fr) 24px;align-items:center}
++.ticket summary::-webkit-details-marker{display:none}
++.ticket summary strong{font-family:ui-monospace,monospace}
++.ticket summary small{display:block;margin-bottom:var(--space-1)}
++.ticket summary .value{font-variant-numeric:tabular-nums}
++.chevron{color:var(--muted)}.ticket[open] .chevron{transform:rotate(90deg)}
++.detail-top p{font-size:14px;color:var(--muted)}
++td small{display:block;margin-top:var(--space-1)}
++.empty{padding:var(--space-8);text-align:center;color:var(--muted)}
++.footer code{background:#eef2ef;padding:var(--space-1);border-radius:4px}
++noscript{display:block;padding:var(--space-4);background:#fff5e3}
++.copy-fallback{display:block;margin-top:var(--space-2);width:100%;max-width:340px;font:14px/1.5 ui-monospace,monospace;padding:var(--space-2);border:1px solid #bb690c;border-radius:8px;background:#fff8ef;color:var(--ink)}
+ button.is-copied{background:#1d6b3a;color:#fff;border-color:#1d6b3a}
+ button.is-copy-failed{background:#fbe6cf;color:#8a4a0c;border-color:#bb690c}
++@media(max-width:700px){.ticket summary{grid-template-columns:1fr 64px}.chevron{display:none}.list-top,.detail-top{align-items:start;flex-direction:column}.controls label{width:100%}}
+ </style></head><body>
+ <header><div class="eyebrow">__TITLE__</div><h1>Bookable codes</h1><p>Codes with total odds between 5,000 and 350,000, de-correlated so no game is shared between any two of them — one result can't sink several tickets.</p></header>
+ <main>
+ <noscript>Enable JavaScript to view the bookable codes.</noscript>
+-<div class="controls" style="margin-bottom:20px"><label class="search">Search code, team, league or market<input id="search" type="search" placeholder="Filter by code or team…"></label></div>
++<div class="controls" style="margin-bottom:var(--space-6)"><label class="search">Search code, team, league or market<input id="search" type="search" placeholder="Filter by code or team…"></label></div>
+ 
+ <section class="panel" aria-labelledby="ls-heading"><h2 id="ls-heading">Bookable codes<span class="tag tag-longshot">5,000–350,000 odds</span></h2>
+ <p id="ls-summary" class="notice"></p>
+--- /dev/null
++++ b/ticket-analysis/portfolio/ui.css
+@@ -0,0 +1,77 @@
++/* Shared by the live console and both standalone reports; inlined for file://. */
++:root {
++  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
++  --space-6:24px; --space-8:32px;
++  --ink:#1d2523; --muted:#58645f; --accent:#205b46;
++  --surface:#fff; --canvas:#f5f6f5; --line:#d8dedb;
++  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
++  font-size:16px; line-height:1.5; color:var(--ink); background:var(--canvas); color-scheme:light;
++}
++* {box-sizing:border-box}
++[hidden] {display:none!important}
++body {margin:0}
++button,input,select,textarea {font:inherit}
++button,input,select,textarea,a,summary {touch-action:manipulation}
++button,input,select,textarea {min-width:44px; min-height:44px; border-radius:8px}
++button,.button {padding:var(--space-2) var(--space-4); border:1px solid var(--line); background:var(--surface); color:var(--accent); font-weight:600; cursor:pointer; min-width:44px; min-height:44px}
++input,select {max-width:100%; padding:var(--space-2) var(--space-3); border:1px solid #aab6af; background:var(--surface); color:var(--ink)}
++button.go,.allbtn {background:var(--accent); border-color:var(--accent); color:#fff}
++button.quiet {background:transparent; border-color:transparent}
++button:disabled,button:disabled:hover,input:disabled,select:disabled {
++  opacity:.45; cursor:not-allowed; box-shadow:none; filter:none;
++}
++fieldset:disabled button {cursor:not-allowed}
++:where(button,input,select,textarea,a,summary):focus-visible {outline:3px solid #2878c8; outline-offset:3px}
++@media(hover:hover) {
++  button:enabled:hover {filter:brightness(.94)}
++  summary:hover {background:#f0f4f1}
++}
++summary {min-width:44px; min-height:44px; padding:var(--space-3) 0; cursor:pointer}
++a {display:inline-flex; align-items:center; min-width:44px; min-height:44px}
++header {background:var(--surface); color:var(--ink); padding:var(--space-8) max(24px,calc((100vw - 1072px)/2))}
++header p {color:var(--muted); max-width:760px; margin:0; line-height:1.5}
++header a {color:var(--accent)}
++.eyebrow {color:var(--muted); font-size:12px; font-weight:600; letter-spacing:.08em; text-transform:uppercase}
++h1 {font-size:32px; font-weight:650; line-height:1.2; letter-spacing:-.025em; margin:var(--space-2) 0 var(--space-4)}
++h2 {font-size:24px; font-weight:650; line-height:1.25; letter-spacing:-.02em; margin:0 0 var(--space-2)}
++h3 {font-size:18px; line-height:1.4; font-weight:600; margin:var(--space-6) 0 var(--space-2)}
++h4 {font-size:16px; line-height:1.5; font-weight:600; margin:var(--space-4) 0 var(--space-2)}
++p {line-height:1.5}
++main {max-width:1120px; margin:auto; padding:var(--space-6) var(--space-6) 64px}
++.panel {background:var(--surface); border:0; border-radius:16px; margin-bottom:var(--space-6); padding:var(--space-8); box-shadow:0 1px 3px #172a2010}
++.panel[aria-disabled=true] {opacity:1}
++.panel[aria-disabled=true] .step {background:#e7ebe8; color:var(--muted)}
++.notice,.footer,td small {color:var(--muted); font-size:14px; line-height:1.5}
++.notice {margin:var(--space-2) 0 0}
++label {display:flex; flex-direction:column; gap:var(--space-2); font-size:14px; font-weight:600; min-width:0}
++label span {color:var(--muted); font-size:12px; font-weight:400}
++.grid,.controls,.bar,.list-top,.detail-top {gap:var(--space-4)}
++.grid {display:flex; align-items:end; flex-wrap:wrap; margin-top:var(--space-4)}
++.grid>label {flex:1 1 160px}
++.facts {display:flex; flex-wrap:wrap; gap:var(--space-6); margin:var(--space-6) 0; padding:0; list-style:none}
++.facts li {background:transparent; border:0; padding:0; min-width:104px}
++.facts b {display:block; font-size:12px; text-transform:none; letter-spacing:0; color:var(--muted); font-weight:500}
++.facts span {font-size:24px; font-weight:600; font-variant-numeric:tabular-nums}
++.ticket {background:var(--surface); border:0; border-bottom:1px solid var(--line); border-radius:0; margin:0}
++.ticket summary {padding:var(--space-4) 0; gap:var(--space-4)}
++.ticket[open] summary {background:transparent; border-bottom:0}
++.ticket summary small,summary small,th {font-size:12px; color:var(--muted); text-transform:none; letter-spacing:0}
++.ticket summary strong {font-size:16px}
++.detail {padding:var(--space-4); overflow-x:auto}
++.scroll {max-width:100%; overflow:auto}
++th {background:transparent; font-weight:600}
++th,td {padding:var(--space-3) var(--space-2); border-bottom:1px solid #e7ebe8}
++table {border-collapse:collapse; width:100%; text-align:left; font-size:14px}
++.n {font-variant-numeric:tabular-nums}
++details.more {margin-top:var(--space-4)}
++details.more>summary,.footer summary {font-size:14px; font-weight:600; color:var(--accent)}
++@media(max-width:700px) {
++  header {padding:var(--space-6) var(--space-4)}
++  h1 {font-size:28px} h2 {font-size:22px}
++  main {padding:var(--space-4) var(--space-3) var(--space-8)}
++  .panel {padding:var(--space-6) var(--space-4)}
++  .grid>label {flex-basis:100%}
++  input,select {width:100%; font-size:16px}
++  .ticket summary {padding:var(--space-4) 0; gap:var(--space-3)}
++}
++@media(prefers-reduced-motion:reduce) {*,*::before,*::after {scroll-behavior:auto!important; transition:none!important; animation:none!important}}
+--- a/ticket-analysis/tests/test_pages.py
++++ b/ticket-analysis/tests/test_pages.py
+@@ -183,6 +183,20 @@
+         if done.returncode:
+             raise AssertionError(f'console probe failed: {done.stderr}')
+         cls.seen = json.loads(done.stdout)
++
++    def test_saved_run_search_filters_metadata_and_clears_stale_selection(self):
++        seen = self.seen['search_saved_runs']
++        self.assertTrue(seen['initiallyDisabled'])
++        self.assertEqual(len(seen['options']), 1)
++        self.assertIn('ABC1234', seen['options'][0])
++        self.assertIn('succeeded', seen['options'][0])
++        self.assertNotIn('run-bet9ja', seen['options'][0])
++        self.assertTrue(seen['selected']['enabled'])
++        self.assertIn('run-bet9ja-20261024-120000-a', seen['selected']['details'])
++        self.assertTrue(seen['emptyDisabled'])
++        self.assertEqual(seen['emptyMessage'], 'No matching runs')
++        self.assertTrue(seen['detailsHidden'])
++        self.assertEqual(seen['requests'], 0)
+ 
+     def test_historical_checks_keep_population_and_revision_across_filtering_and_navigation(self):
+         seen = self.seen['historical_results']
+--- a/ticket-analysis/tests/fixtures/console_probe.js
++++ b/ticket-analysis/tests/fixtures/console_probe.js
+@@ -155,6 +155,7 @@
+   answer(world.pending.splice(latest, 1)[0], {runs: [runStatus(run_id, state, provider)]});
+   await settle();
+   world.el('runs').value = run_id;
++  world.el('runs').fire('change');
+   press(world, 'runs-load');
+   await settle();
+   answer(take(world, `/api/scan/${run_id}`), runStatus(run_id, state, provider));
+@@ -345,6 +346,7 @@
+     answer(take(w, '/api/runs'), {runs: [runStatus('RUN_B', 'succeeded', 'sportybet')]});
+     await settle();
+     w.el('runs').value = 'RUN_B';
++    w.el('runs').fire('change');
+     press(w, 'runs-load'); await settle();
+     answer(take(w, '/api/scan/RUN_B'), runStatus('RUN_A', 'succeeded', 'bet9ja'));
+     await settle();
+@@ -646,6 +648,23 @@
+ };
+ 
+ 
++scenarios.search_saved_runs = async () => {
++  const w = await start();
++  w.el('runs-refresh').fire('click'); await settle();
++  answer(take(w, '/api/runs'), {runs: [
++    {...runStatus('run-bet9ja-20261024-120000-a', 'succeeded'), seed:'ABC1234', started_at:'2026-10-24T12:00:00Z'},
++    {...runStatus('run-bet9ja-20261023-120000-b', 'cancelled'), seed:'XYZ5678'},
++    {...runStatus('foreign', 'succeeded', 'sportybet'), seed:'ABC1234'}]}); await settle();
++  const initiallyDisabled = w.el('runs-load').disabled && w.el('runs-check-results').disabled;
++  w.el('runs-search').value = 'ABC1234'; w.el('runs-search').fire('input');
++  const options = w.el('runs').childNodes.filter(el => el.value).map(el => el.text);
++  w.el('runs').value = 'run-bet9ja-20261024-120000-a'; w.el('runs').fire('change');
++  const selected = {enabled:!w.el('runs-load').disabled, details:w.el('runs-details').text};
++  w.el('runs-search').value = 'no match'; w.el('runs-search').fire('input');
++  return {initiallyDisabled, options, selected, emptyDisabled:w.el('runs-load').disabled && w.el('runs-check-results').disabled,
++    emptyMessage:w.el('runs').firstChild.text, detailsHidden:w.el('runs-details').hidden, requests:w.pending.length};
++};
++
+ scenarios.historical_results = async () => {
+   const w = await start();
+   await pick(w, 'RUN_A', 'succeeded');
+@@ -673,7 +692,7 @@
+   answer(focused,{total:26,filtered_total:1,rows:[rows[0]]}); await settle();
+   w.el('results-show-all').fire('click'); await settle();
+   answer(take(w,'/codes?'),{total:26,filtered_total:26,rows:rows.slice(0,25)}); await settle();
+-  const checked = {summary:w.el('results-summary').textContent,rates:w.el('results-rates').textContent};
++  const checked = {summary:w.el('results-summary').textContent,rates:w.el('results-rates').text};
+   w.el('results-next').fire('click'); await settle();
+   const next = take(w,'/codes?');
+   const pinned = next.url.includes('revision=rev-one') && next.url.includes('offset=25');
