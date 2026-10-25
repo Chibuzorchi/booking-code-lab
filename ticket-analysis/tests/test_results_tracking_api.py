@@ -588,7 +588,7 @@ class SubmitEvaluationTests(unittest.TestCase):
             report = get_latest_report(config, "run-1")
             self.assertEqual(report["counts"]["total"], 3)
             codes = list_codes(config, "run-1", report["revision_id"], limit=10)
-            not_supplied = [t for t in codes["rows"] if t["reason"] == "not_supplied_in_evidence"]
+            not_supplied = [t for t in codes["rows"] if t["reason"] == "malformed_original_ticket"]
             self.assertEqual(len(not_supplied), 2)
             for ticket in not_supplied:
                 self.assertEqual(ticket["status"], "unresolved")

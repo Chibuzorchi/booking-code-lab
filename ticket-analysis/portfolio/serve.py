@@ -13,6 +13,7 @@ Usage (run from Sport/ticket-analysis/):
 from __future__ import annotations
 
 import argparse
+import os
 import hashlib
 import ipaddress
 import json
@@ -42,7 +43,14 @@ class ResultsContext:
 
     def __init__(self, registry: RunRegistry):
         root = registry.runs_root.parent / "results_tracking"
-        self.config = ResultsApiConfig(root=root)
+        config_path = Path(os.environ.get("F9_RESULTS_CONFIG", str(root / "config.json"))).expanduser()
+        if "F9_RESULTS_CONFIG" not in os.environ and not config_path.exists():
+            config_path = None
+        settings = json.loads(config_path.read_text()) if config_path is not None else {}
+        if not isinstance(settings, dict) or type(settings.get("network_enabled", False)) is not bool:
+            raise ValueError("results configuration requires a boolean network_enabled")
+        self.config = ResultsApiConfig(root=root, identity_config_path=config_path,
+            network_enabled=settings.get("network_enabled", False), tolerate_incomplete_fetch=True)
         self.job_store = JobStore(self.config.jobs_root())
 
 # Injected only into the served page, so file:// stays clean and offline.

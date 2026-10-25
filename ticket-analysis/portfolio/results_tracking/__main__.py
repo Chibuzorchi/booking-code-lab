@@ -13,6 +13,11 @@ Two subcommands:
 """
 from __future__ import annotations
 
+from dataclasses import asdict
+import base64
+import binascii
+from collections import Counter
+
 import argparse
 import hashlib
 import json
@@ -245,6 +250,13 @@ def _validate_ticket_matches_audited_original(ticket, provider, legs_payload, au
         raise EvaluationInputError(
             f"{t_context}: provider {provider!r} does not match the audited original "
             f"ticket's provider {audited_provider!r} for this row_id")
+    original_ticket = audited_row.get("original_ticket")
+    if isinstance(original_ticket, dict):
+        original_type = str(original_ticket["bet_type"]) if original_ticket.get("bet_type") is not None else ""
+        if (ticket.get("raw_bet_type") != original_type
+                or ticket.get("selected_systems") != original_ticket.get("selected_systems")
+                or ticket.get("ticket_id") != (original_ticket.get("code") or ticket.get("row_id"))):
+            raise EvaluationInputError(f"{t_context}: ticket structure/code differs from audited original")
     original_selections = audited_row.get("original_selections") or []
     if len(legs_payload) != len(original_selections):
         raise EvaluationInputError(
@@ -262,6 +274,14 @@ def _validate_ticket_matches_audited_original(ticket, provider, legs_payload, au
                       if leg_payload.get(supplied_field) != original.get(original_field)]
         if kickoff_raw != original.get("kickoff"):
             mismatched.append("kickoff.raw")
+        if isinstance(original_ticket, dict):
+            native = original.get("native_event_id")
+            if native is None:
+                native = original.get("event_id")
+            if leg_payload.get("provider_event_id") != (str(native) if native is not None else None):
+                mismatched.append("provider_event_id")
+            if leg_payload.get("specifier") != (original.get("specifier") or ""):
+                mismatched.append("specifier")
         if mismatched:
             raise EvaluationInputError(
                 f"{t_context}.legs[{leg_index}]: {', '.join(mismatched)} do not match the "
@@ -314,6 +334,14 @@ def evaluate_run(evidence: dict, audit_rows: dict | None = None) -> dict:
     a synthetic/offline harness over whatever tickets evidence supplies,
     with no population anchoring at all."""
     evidence = _require_dict(evidence, "evidence")
+    for observation in _require_list(evidence.get("raw_sources", []), "raw_sources"):
+        observation = _require_dict(observation, "raw_sources entry")
+        try:
+            raw = base64.b64decode(_get_str(observation, "base64", "raw_sources"), validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise EvaluationInputError("invalid raw source bytes") from exc
+        if hashlib.sha256(raw).hexdigest() != observation.get("sha256"):
+            raise EvaluationInputError("raw source digest mismatch")
     fixtures = tuple(_parse_fixture(f, i) for i, f in enumerate(_require_list(
         evidence.get("fixtures", []), "evidence.fixtures")))
     aliases = tuple(_parse_alias(a, i) for i, a in enumerate(_require_list(
@@ -330,7 +358,14 @@ def evaluate_run(evidence: dict, audit_rows: dict | None = None) -> dict:
         ticket_id = _get_str(ticket, "ticket_id", t_context)
         provider = _get_str(ticket, "provider", t_context)
         raw_bet_type = _get_str(ticket, "raw_bet_type", t_context)
-        structure_verified = verify_bet_type(provider, raw_bet_type)["status"] == "verified"
+        try:
+            type_verification = verify_bet_type(provider, raw_bet_type,
+                row_id=ticket.get("row_id"), selected_systems=ticket.get("selected_systems"),
+                num_legs=len(_require_list(ticket.get("legs"), f"{t_context}.legs")),
+                records=_require_list(evidence.get("ticket_structures", []), "ticket_structures"))
+        except ValueError as exc:
+            raise EvaluationInputError(str(exc)) from exc
+        structure_verified = type_verification["status"] == "verified"
 
         row_id = None
         if audit_rows is not None:
@@ -379,6 +414,16 @@ def evaluate_run(evidence: dict, audit_rows: dict | None = None) -> dict:
                 "leg_id": leg_outcome.leg_id, "status": leg_outcome.status.value,
                 "rule_id": leg_outcome.rule_id, "reason": leg_outcome.reason,
                 "match_tier": match_tier, "matched_fixture": matched_fixture,
+                "selection": {k: leg_payload.get(k) for k in
+                    ("event_display", "league_display", "sport", "market", "pick", "specifier", "kickoff")},
+                "fixture": None if decision is None or decision.fixture is None else {
+                    "home_team": decision.fixture.home_team, "away_team": decision.fixture.away_team,
+                    "competition": decision.fixture.competition, "state": decision.fixture.state.value,
+                    "kickoff": decision.fixture.kickoff.raw,
+                    "score": None if decision.fixture.regulation_score is None else
+                        asdict(decision.fixture.regulation_score),
+                    "provenance": asdict(decision.fixture.provenance)},
+                "candidates": [] if decision is None else [{"source": c.fixture.provenance.source, "source_fixture_id": c.fixture.provenance.source_fixture_id, "event": f"{c.fixture.home_team} - {c.fixture.away_team}", "kickoff": c.fixture.kickoff.raw, "evidence": list(c.evidence)} for c in decision.candidates],
             })
         ticket_outcome = aggregate_ticket(leg_outcomes, structure_verified=structure_verified)
         ticket_outcomes.append(ticket_outcome)
@@ -389,6 +434,7 @@ def evaluate_run(evidence: dict, audit_rows: dict | None = None) -> dict:
             "status": ticket_outcome.status.value,
             "reason": ticket_outcome.reason,
             "proxy_all_legs_won": ticket_outcome.proxy_all_legs_won,
+            "structure_verification": type_verification,
             "legs": leg_reports,
         })
 
@@ -402,6 +448,37 @@ def evaluate_run(evidence: dict, audit_rows: dict | None = None) -> dict:
             })
 
     counts = counts_from_ticket_outcomes(ticket_outcomes)
+    checked = evidence.get("checked_row_ids")
+    retrieval_errors = evidence.get("retrieval_errors", {})
+    originals = evidence.get("original_tickets", {})
+    if checked is not None:
+        checked = _require_list(checked, "checked_row_ids")
+        if any(not isinstance(key, str) for key in checked) or len(set(checked)) != len(checked):
+            raise EvaluationInputError("checked_row_ids must contain unique row identities")
+        if audit_rows is not None and not set(checked).issubset(audit_rows):
+            raise EvaluationInputError("checked_row_ids outside audited population")
+        for ticket_report in ticket_reports:
+            key = ticket_report["row_id"]
+            ticket_report["original_ticket"] = originals.get(key)
+            ticket_report["checked"] = key in checked
+            if key not in checked:
+                ticket_report["reason"] = "not_checked"
+            elif ticket_report["reason"] == "not_supplied_in_evidence":
+                ticket_report["reason"] = "malformed_original_ticket"
+            for leg in ticket_report.get("legs", []):
+                if leg["reason"] == "fixture_not_matched":
+                    raw = (leg["selection"].get("kickoff") or {}).get("raw", "")
+                    # Query dates use UTC for explicit offsets, saved calendar date
+                    # otherwise. No timezone interpretation is invented here.
+                    try:
+                        instant = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                        date = instant.astimezone(timezone.utc).date().isoformat() if instant.tzinfo else raw[:10]
+                    except ValueError:
+                        date = raw[:10]
+                    error = retrieval_errors.get(date)
+                    if error:
+                        leg["reason"] = error["code"]
+                        leg["retrieval_error"] = error
     percentages = compute_percentages(counts)
     return {
         "tickets": ticket_reports,
@@ -415,6 +492,11 @@ def evaluate_run(evidence: dict, audit_rows: dict | None = None) -> dict:
             "eventual_binary_win_bound_high": _serialize_rate(percentages.eventual_binary_win_bound_high),
         },
         "rule_versions": dict(rule_registry.rule_versions()),
+        "leg_counts": dict(Counter(leg["status"] for ticket in ticket_reports for leg in ticket["legs"])),
+        "ticket_unresolved_reasons": dict(Counter(ticket["reason"] for ticket in ticket_reports
+            if ticket["status"] == "unresolved" and ticket["reason"])),
+        **({"checked_row_ids": checked, "retrieval_errors": retrieval_errors,
+            "population_complete": evidence.get("population_complete", True)} if checked is not None else {}),
     }
 
 

@@ -184,6 +184,29 @@ class ConsoleStateTests(unittest.TestCase):
             raise AssertionError(f'console probe failed: {done.stderr}')
         cls.seen = json.loads(done.stdout)
 
+    def test_historical_checks_keep_population_and_revision_across_filtering_and_navigation(self):
+        seen = self.seen['historical_results']
+        self.assertEqual(seen['before']['cards'], 25)
+        self.assertIn('26 saved codes', seen['before']['summary'])
+        self.assertEqual(seen['rowSelector'], 'digest:0')
+        self.assertTrue(seen['focusedRow'])
+        self.assertIn('1 checked', seen['checked']['summary'])
+        self.assertIn('(1/26)', seen['checked']['rates'])
+        self.assertTrue(seen['pinned'])
+        self.assertEqual(seen['finalPage'], 1)
+        self.assertTrue(seen['filtering'])
+        self.assertTrue(seen['unchanged'])
+        self.assertEqual(seen['staleError'], '')
+        self.assertTrue(seen['hidden'])
+        self.assertIn('RUN_B', seen['run'])
+
+    def test_saved_code_cards_offer_individual_and_full_run_checks(self):
+        seen = self.seen['direct_saved_code_actions']
+        self.assertEqual(seen['selected'], seen['expected'])
+        self.assertNotIn('row_id', seen['allBody'])
+        self.assertTrue(seen['copyPresent'])
+        self.assertIn('saved codes', seen['label'])
+
     def test_a_late_stage_2_reply_cannot_become_another_run_s_analysis(self):
         after = self.seen['stale_stage2']
         self.assertIn('RUN_B', after['state_line'])
@@ -347,7 +370,7 @@ class ConsoleStateTests(unittest.TestCase):
         listed = seen['listed']
         self.assertFalse(listed['hidden'])
         self.assertEqual(['LOW111', 'TWIN44', 'TWIN55', 'MID222', 'HIGH33', 'NOPRICE'], listed['shown'])
-        self.assertIn("6 code(s) in this run's odds band, overlapping ones included", listed['note'])
+        self.assertIn("6 upcoming code(s) available for analysis; 6 saved code(s) in this run, overlapping ones included", listed['note'])
         self.assertEqual(listed['shown'], listed['copied'].split('\n'))
         self.assertEqual(0, listed['s2_cards'])
         self.assertFalse(listed['s2_locked'])
@@ -371,7 +394,7 @@ class ConsoleStateTests(unittest.TestCase):
         self.assertIn('26 saved code(s) hidden', seen['hidden']['note'])
         self.assertEqual(seen['revealed']['cards'], 25)
         self.assertEqual(seen['revealed']['page'], 'Page 1 of 2 (25 per page)')
-        self.assertIn('outcome not checked', seen['revealed']['label'])
+        self.assertIn('Scheduled kickoff has passed.', seen['revealed']['label'])
         self.assertEqual(seen['revealed']['pressed'], 'true')
         self.assertEqual(seen['copied'], 26)
         self.assertEqual(seen['finalPage'], 1)

@@ -1,5 +1,6 @@
 """Local HTTP API contract; provider jobs remain owned by RunRegistry."""
 import dataclasses
+import hashlib
 import json
 import math
 import re
@@ -10,7 +11,7 @@ from .selection import ParamError, parse_decorrelate_params
 from .uniqueness import analyze_extract
 from .results_tracking.jobs import JobError, JobNotFoundError
 from .results_tracking.results_api import (
-    ReportNotFoundError, ResultsApiError, cancel_job, get_latest_report, list_codes,
+    ReportNotFoundError, ResultsApiError, cancel_job, get_latest_report, list_codes, list_saved_codes,
     submit_evaluation,
 )
 
@@ -140,16 +141,24 @@ def dispatch(registry, method, path, body, query, results=None):
                 except JobNotFoundError as exc:
                     raise APIError(404, 'job_not_found', 'Result job not found') from exc
             if _RESULTS_CODES_RE.fullmatch(path):
-                fields(query, ('revision', 'offset', 'limit'))
+                fields(query, ('revision', 'offset', 'limit', 'view', 'snapshot', 'allow_partial', 'status', 'row_id'))
                 run_id = path[len('/api/results/'):-len('/codes')]
                 revision_id = query.get('revision')
-                if not isinstance(revision_id, str) or not revision_id:
+                saved = query.get('view') == 'saved'
+                if query.get('view') not in (None, 'saved'):
+                    raise ParamError('view must be saved when supplied')
+                if not saved and (not isinstance(revision_id, str) or not revision_id):
                     raise ParamError('revision is required')
+                if query.get('allow_partial') not in (None, 'true', 'false'):
+                    raise ParamError('allow_partial must be true or false')
                 offset = _bounded_int(query, 'offset', 0, 0)
                 limit = _bounded_int(query, 'limit', 50, 1)
                 try:
+                    if saved:
+                        return 200, list_saved_codes(registry, run_id, offset=offset, limit=limit,
+                            snapshot=query.get('snapshot'), allow_partial=query.get('allow_partial') == 'true', status=query.get('status'), row_id=query.get('row_id'))
                     return 200, list_codes(results.config, run_id, revision_id,
-                                            offset=offset, limit=limit)
+                                            offset=offset, limit=limit, status=query.get('status'), row_id=query.get('row_id'))
                 except ReportNotFoundError as exc:
                     raise APIError(404, 'report_not_found', 'No such revision for this run') from exc
                 except ResultsApiError as exc:
@@ -174,17 +183,19 @@ def dispatch(registry, method, path, body, query, results=None):
                 raise APIError(404, 'job_not_found', 'Result job not found') from exc
         if results is not None and _RESULTS_RUN_RE.fullmatch(path):
             fields(query, ())
-            fields(body, ('refresh', 'allow_partial'))
+            fields(body, ('refresh', 'allow_partial', 'row_id'))
             refresh = body.get('refresh', False)
             allow_partial = body.get('allow_partial', False)
             if type(refresh) is not bool:
                 raise ParamError('refresh must be a boolean')
             if type(allow_partial) is not bool:
                 raise ParamError('allow_partial must be a boolean')
+            if 'row_id' in body and (not isinstance(body['row_id'], str) or not body['row_id']):
+                raise ParamError('row_id must be a nonempty frozen row identity')
             run_id = path[len('/api/results/'):]
             try:
                 record = submit_evaluation(registry, results.config, results.job_store, run_id,
-                                            refresh=refresh, allow_partial=allow_partial)
+                                            refresh=refresh, allow_partial=allow_partial, row_id=body.get('row_id'))
             except ResultsApiError as exc:
                 raise APIError(422, 'invalid_results_state', str(exc)) from exc
             return 202, _job_payload(record)
@@ -228,6 +239,10 @@ def dispatch(registry, method, path, body, query, results=None):
                                   collect_expired=True, **policy)
                 codes = pool.pop('tickets')
                 expired = pool.pop('expired_tickets')
+                digest = hashlib.sha256(snapshot).hexdigest()
+                indices = {id(raw): index for index, raw in enumerate(data['qualifying'])}
+                for ticket in codes + expired:
+                    ticket['row_id'] = f"{digest}:{indices[id(ticket['raw'])]}"
                 report = {**pool, 'codes': codes, 'partial': partial,
                           'expired_codes': expired, 'expired_count': len(expired),
                           'saved_count': len(data['qualifying']),

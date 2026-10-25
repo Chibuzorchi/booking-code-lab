@@ -1,5 +1,10 @@
 # F9 readiness for step 6 — 24 October 2026
 
+Historical-product scope update: `F9_RESULTS_PLAN.md` now uses the older 8/10
+October saved runs as primary product acceptance inputs. The original 164-ticket
+23 October freeze below is retained as regression history. See
+`F9_HISTORICAL_RESULTS_IMPLEMENTATION.md` for the implemented UI/source workflow.
+
 The two remaining lifecycle blockers from `F9_STEP5_REREVIEW.md` have been fixed.
 The next work is section 10 step 6 of `F9_RESULTS_PLAN.md`: acceptance evaluation.
 This change does not perform that evaluation or establish any historical win rate.

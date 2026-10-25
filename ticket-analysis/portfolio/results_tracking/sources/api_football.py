@@ -99,6 +99,10 @@ class ApiFootballAuthError(ApiFootballError):
     Retrying with the same key cannot succeed."""
 
 
+class ApiFootballAccessError(ApiFootballError):
+    """A specific date/season is outside this account's access window."""
+
+
 class ApiFootballQuotaError(ApiFootballError):
     """The source itself signalled a rate/quota limit. Retrying
     immediately cannot succeed."""
@@ -122,6 +126,8 @@ def _classify_api_errors(errors) -> ApiFootballError:
         return ApiFootballAuthError(message)
     if tokens & {"requests", "ratelimit", "rate_limit"}:
         return ApiFootballQuotaError(message)
+    if "do not have access to this date" in message.lower() or "do not have access to this season" in message.lower():
+        return ApiFootballAccessError(message)
     return ApiFootballError(message)
 
 
@@ -134,6 +140,7 @@ class ApiFootballClient:
         self.session = session or requests.Session()
         self.session.headers.update({"x-apisports-key": self.api_key})
         self.timeout_s = timeout_s
+        self.raw_observations = {}
 
     def get_fixtures_by_date(self, date: str, league: int | None = None,
                               season: int | None = None) -> list[dict]:
@@ -170,6 +177,8 @@ class ApiFootballClient:
             raise ApiFootballError(f"response is not valid JSON: {exc}") from exc
         if not isinstance(payload, dict):
             raise ApiFootballError(f"API-Football envelope is not a JSON object: {type(payload)!r}")
+        if isinstance(resp.content, bytes):
+            self.raw_observations[date] = resp.content
         errors = payload.get("errors")
         if errors:
             raise _classify_api_errors(errors)

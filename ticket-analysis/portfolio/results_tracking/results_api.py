@@ -34,6 +34,9 @@ ResultsApiConfig and the environment.
 from __future__ import annotations
 
 import hashlib
+import fcntl
+import time
+import base64
 import json
 import os
 import re
@@ -45,10 +48,11 @@ from pathlib import Path
 from typing import Callable
 
 from .__main__ import EvaluationInputError, evaluate_run
+from .local_sources import freeze_local_sources
 from .cache import CacheKey, FixtureCache, QuotaExceededError, QuotaTracker
 from .jobs import FatalTaskError, JobBudget, JobError, JobRecord, JobState, JobStore, Task, WorkerOwnership, run_result_job
 from .sources.api_football import (
-    ApiFootballClient, ApiFootballError, ApiFootballTransportError, build_fixture, filter_in_scope,
+    ApiFootballClient, ApiFootballError, ApiFootballTransportError, ApiFootballAccessError, build_fixture, filter_in_scope,
 )
 
 PARSER_VERSION = "api_football_v1"
@@ -120,6 +124,7 @@ class ResultsApiConfig:
     per_call_timeout: float = 15.0
     max_requests_per_job: int = 90
     identity_config_path: Path | None = None
+    network_enabled: bool = True
     # Whether a report may still publish when one or more needed dates
     # never finished fetching (F9_STEP5_REVIEW.md S5-10). Deliberately a
     # server-controlled setting, not the client-supplied `allow_partial`
@@ -171,14 +176,15 @@ def load_identity_evidence(config: ResultsApiConfig) -> tuple[list, list]:
     return aliases, verified_mappings
 
 
-def compute_config_digest(config: ResultsApiConfig) -> str:
-    identity_bytes = (config.identity_config_path.read_bytes()
-                       if config.identity_config_path is not None else b"")
+def compute_config_digest(config: ResultsApiConfig, bundle=None) -> str:
+    bundle = freeze_local_sources(config.identity_config_path) if bundle is None else bundle
+    identity_bytes = json.dumps([(o["kind"], o["sha256"]) for o in bundle["raw_sources"]]).encode()
     payload = json.dumps({
         "daily_quota": config.daily_quota, "max_workers": config.max_workers,
         "max_retries": config.max_retries, "per_call_timeout": config.per_call_timeout,
         "max_requests_per_job": config.max_requests_per_job, "parser_version": PARSER_VERSION,
         "tolerate_incomplete_fetch": config.tolerate_incomplete_fetch,
+        "network_enabled": config.network_enabled, "evaluation_version": "historical_results_v1",
         "retry_backoff_base": config.retry_backoff_base, "retry_backoff_max": config.retry_backoff_max,
         "identity_config_sha256": hashlib.sha256(identity_bytes).hexdigest(),
     }, sort_keys=True).encode("utf-8")
@@ -251,7 +257,7 @@ def _build_audit_rows(provider, rows: dict) -> dict:
             if isinstance(raw_selections, list) else []
         audit_rows[row_id] = {"code": ticket.get("code"), "num_legs": ticket.get("num_legs"),
                                "num_selections": len(original_selections), "provider": provider,
-                               "original_selections": original_selections}
+                               "original_selections": original_selections, "original_ticket": ticket}
     return audit_rows
 
 
@@ -268,7 +274,8 @@ def _dates_needed(rows: dict) -> list[str]:
                 continue
             kickoff = selection.get("kickoff")
             if isinstance(kickoff, str) and _DATE_RE.match(kickoff):
-                dates.add(kickoff[:10])
+                normalized = _selection_kickoff_evidence(kickoff)
+                dates.add(normalized["utc"][:10] if normalized["utc"] else kickoff[:10])
     return sorted(dates)
 
 
@@ -299,6 +306,21 @@ def _selection_kickoff_evidence(kickoff_raw) -> dict:
             return {"raw": kickoff_raw, "precision": "exact", "utc": utc.isoformat(),
                     "timezone_evidence": "explicit_offset_in_raw_kickoff_string"}
     return {"raw": kickoff_raw, "precision": "date_only", "utc": None, "timezone_evidence": None}
+
+
+def _can_evaluate_ticket(ticket):
+    if not isinstance(ticket, dict):
+        return False
+    if ticket.get("code") is not None and not isinstance(ticket["code"], str):
+        return False
+    legs = ticket.get("selections")
+    if not isinstance(legs, list) or not legs:
+        return False
+    if isinstance(ticket.get("num_legs"), int) and ticket["num_legs"] != len(legs):
+        return False
+    return all(isinstance(leg, dict) and (leg.get("specifier") is None or isinstance(leg["specifier"], str))
+        and all(isinstance(leg.get(k), str) and leg[k]
+        for k in ("event", "league", "sport", "market", "pick", "kickoff")) for leg in legs)
 
 
 def _ticket_to_evidence(row_id: str, ticket: dict, provider: str | None) -> dict:
@@ -337,7 +359,8 @@ def _ticket_to_evidence(row_id: str, ticket: dict, provider: str | None) -> dict
         "ticket_id": ticket.get("code") or row_id,
         "row_id": row_id,
         "provider": provider or "",
-        "raw_bet_type": ticket.get("bet_type") or "",
+        "raw_bet_type": str(ticket["bet_type"]) if ticket.get("bet_type") is not None else "",
+        "selected_systems": ticket.get("selected_systems"),
         "legs": legs,
     }
 
@@ -366,7 +389,7 @@ def _cache_key_for_date(date: str) -> CacheKey:
 
 
 def _make_fetch_one(client, cache: FixtureCache, quota: QuotaTracker, *,
-                     refresh: bool = False) -> Callable:
+                     refresh: bool = False, access_errors=None) -> Callable:
     def fetch_one(task: Task):
         date = task.payload
         key = _cache_key_for_date(date)
@@ -386,6 +409,11 @@ def _make_fetch_one(client, cache: FixtureCache, quota: QuotaTracker, *,
                 fetched_at = datetime.now(timezone.utc).isoformat()
                 fixtures = [build_fixture(item, fetched_at=fetched_at)
                             for item in filter_in_scope(raw_fixtures)]
+            except ApiFootballAccessError as exc:
+                if access_errors is None:
+                    raise FatalTaskError(str(exc)) from exc
+                access_errors[date] = {"code": "source_access_restricted", "message": str(exc)}
+                return json.dumps({"access_error": str(exc)}).encode(), False
             except ApiFootballTransportError as exc:
                 # A transport/5xx failure is evidence of nothing about
                 # fixture data -- it reached no usable answer -- so it is
@@ -415,6 +443,11 @@ def _make_fetch_one(client, cache: FixtureCache, quota: QuotaTracker, *,
             cache.get_or_fetch(key, _fetch, is_stale=lambda entry: True)
         else:
             cache.get_or_fetch(key, _fetch)
+        entry = cache.get(key)
+        if entry is not None:
+            cached = json.loads(entry.raw_bytes)
+            if isinstance(cached, dict) and "access_error" in cached and access_errors is not None:
+                access_errors[date] = {"code": "source_access_restricted", "message": cached["access_error"]}
         return date
     return fetch_one
 
@@ -423,7 +456,13 @@ def _fixtures_for_date(cache: FixtureCache, date: str) -> list:
     entry = cache.get(_cache_key_for_date(date))
     if entry is None:
         return []
+    return _fixtures_from_entry(entry)
+
+
+def _fixtures_from_entry(entry):
     raw_fixtures = json.loads(entry.raw_bytes)
+    if not isinstance(raw_fixtures, list):
+        return []
     return [build_fixture(item, fetched_at=entry.fetched_at.isoformat())
             for item in filter_in_scope(raw_fixtures)]
 
@@ -524,11 +563,15 @@ def get_latest_report(config: ResultsApiConfig, run_id: str) -> dict:
     return {"revision_id": manifest["revision_id"], "run_id": run_id, "created_at": manifest["created_at"],
             "counts": report["counts"], "percentages": report["percentages"],
             "rule_versions": report["rule_versions"],
-            "population_complete": report.get("population_complete", True)}
+            "population_complete": report.get("population_complete", True),
+            "checked_count": len(report.get("checked_row_ids", [])),
+            "leg_counts": report.get("leg_counts", {}),
+            "ticket_unresolved_reasons": report.get("ticket_unresolved_reasons", {}),
+            "retrieval_errors": report.get("retrieval_errors", {})}
 
 
 def list_codes(config: ResultsApiConfig, run_id: str, revision_id: str, *,
-                offset: int = 0, limit: int = 50) -> dict:
+                offset: int = 0, limit: int = 50, status=None, row_id=None) -> dict:
     if offset < 0:
         raise ResultsApiError("offset must be >= 0")
     if limit <= 0:
@@ -536,8 +579,45 @@ def list_codes(config: ResultsApiConfig, run_id: str, revision_id: str, *,
     limit = min(limit, MAX_LIST_LIMIT)
     _, report = _verified_revision_report(config, run_id, revision_id)
     tickets = report["tickets"]
-    return {"revision_id": revision_id, "total": len(tickets), "offset": offset, "limit": limit,
-            "rows": tickets[offset:offset + limit]}
+    filtered = _filter_tickets(tickets, status)
+    if row_id is not None:
+        if not any(t.get("row_id") == row_id for t in tickets):
+            raise ResultsApiError("row_id is not in this report")
+        filtered = [t for t in filtered if t.get("row_id") == row_id]
+    return {"revision_id": revision_id, "total": len(tickets), "filtered_total": len(filtered),
+            "offset": offset, "limit": limit, "rows": filtered[offset:offset + limit]}
+
+
+def _filter_tickets(tickets, status):
+    if status not in (None, "", "won", "lost", "void", "pending", "unresolved", "not_checked"):
+        raise ResultsApiError("unknown outcome filter")
+    if not status:
+        return tickets
+    if status == "not_checked":
+        return [t for t in tickets if t.get("checked") is False]
+    return [t for t in tickets if t["status"] == status]
+
+
+def list_saved_codes(registry, run_id, *, offset=0, limit=50, snapshot=None, allow_partial=False, status=None, row_id=None):
+    provider, digest, rows, complete = load_population(registry, run_id, allow_partial=allow_partial)
+    if snapshot is not None and snapshot != digest:
+        raise ResultsApiError("saved population changed; reload this run")
+    if offset < 0 or limit <= 0:
+        raise ResultsApiError("invalid pagination")
+    _filter_tickets([], status)
+    keys = list(rows) if status in (None, "", "unresolved", "not_checked") else []
+    if row_id is not None:
+        if row_id not in rows:
+            raise ResultsApiError("row_id is not in this saved population")
+        keys = [key for key in keys if key == row_id]
+    filtered_total = len(keys)
+    keys = keys[offset:offset + min(limit, MAX_LIST_LIMIT)]
+    return {"revision_id": None, "input_digest": digest, "total": len(rows), "filtered_total": filtered_total,
+            "provider": provider, "population_complete": complete, "offset": offset,
+            "limit": min(limit, MAX_LIST_LIMIT), "rows": [
+                {"row_id": key, "ticket_id": rows[key].get("code") if isinstance(rows[key], dict) else None,
+                 "original_ticket": rows[key], "status": "unresolved", "reason": "not_checked",
+                 "checked": False, "legs": []} for key in keys]}
 
 
 def _default_client_factory(config: ResultsApiConfig) -> Callable[[], object]:
@@ -562,7 +642,7 @@ def _job_identity_digest(input_digest: str, allow_partial: bool) -> str:
 
 def submit_evaluation(registry, config: ResultsApiConfig, job_store: JobStore, run_id: str, *,
                        refresh: bool = False, allow_partial: bool = False,
-                       client_factory: Callable[[], object] | None = None):
+                       client_factory: Callable[[], object] | None = None, row_id: str | None = None):
     """Starts (or returns the existing active job for) one evaluation of
     run_id. Never blocks on fetching/evaluating/publishing -- the real work
     runs on a background thread; this returns as soon as the job record
@@ -584,19 +664,34 @@ def submit_evaluation(registry, config: ResultsApiConfig, job_store: JobStore, r
     client_factory defaults to a real ApiFootballClient bound to this
     config's per_call_timeout (S5-08) -- left None rather than defaulted at
     def-time so it can see the config this call actually received."""
+    if not isinstance(run_id, str) or not _SAFE_ID_RE.fullmatch(run_id):
+        raise ResultsApiError("invalid run id")
     if client_factory is None:
         client_factory = _default_client_factory(config)
     provider, input_digest, rows, population_complete = load_population(
         registry, run_id, allow_partial=allow_partial)
-    config_digest = compute_config_digest(config)
+    if row_id is not None and (not isinstance(row_id, str) or row_id not in rows):
+        raise ResultsApiError("row_id is not in this saved population")
+    try:
+        bundle = freeze_local_sources(config.identity_config_path)
+        config_digest = compute_config_digest(config, bundle)
+    except (OSError, ValueError, TypeError) as exc:
+        raise ResultsApiError(f"invalid historical source configuration: {exc}") from exc
+    _, extract_bytes = registry.saved_codes_snapshot(run_id)[:2] if allow_partial else registry.committed_extract_snapshot(run_id)
+    if hashlib.sha256(extract_bytes).hexdigest() != input_digest:
+        raise ResultsApiError("saved population changed while freezing; retry")
+    bundle["raw_sources"].append({"kind": "original_extract", "sha256": input_digest,
+        "base64": base64.b64encode(extract_bytes).decode("ascii")})
     job_identity = _job_identity_digest(input_digest, allow_partial)
+    if row_id is not None:
+        job_identity = hashlib.sha256(f"{job_identity}:{row_id}".encode()).hexdigest()
     outer, ownership = job_store.claim_worker(run_id, job_identity, config_digest)
     if ownership is not None:
         try:
             thread = threading.Thread(
                 target=_run_evaluation_job,
                 args=(config, job_store, outer.job_id, run_id, provider, input_digest, config_digest,
-                      rows, population_complete, refresh, client_factory, ownership),
+                      rows, population_complete, refresh, client_factory, ownership, row_id, bundle),
                 daemon=True)
             thread.start()
         except Exception as exc:
@@ -631,18 +726,80 @@ def _commit_publication(job_store: JobStore, outer_job_id: str,
     return job_store.update(outer_job_id, commit)
 
 
-def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job_id: str, run_id: str,
+def _run_evaluation_job(config, job_store, outer_job_id, run_id, *args):
+    # Different single-code jobs still publish into one run. Serialize their read /
+    # merge / publish cycle so simultaneous checks cannot lose checked membership.
+    root = config.revisions_root(run_id)
+    owner = args[7]
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        with (root / "evaluation.lock").open("a+b") as handle:
+            while True:
+                if job_store.get(outer_job_id).cancel_requested:
+                    job_store.update(outer_job_id, lambda r: r.update(state=JobState.CANCELLED))
+                    return
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(0.05)
+            _evaluate_owned_population(config, job_store, outer_job_id, run_id, *args)
+    except Exception as exc:
+        job_store.update(outer_job_id, lambda r: r.update(state=JobState.FAILED,
+            error={"code": "evaluation_failed", "message": str(exc)}))
+    finally:
+        owner.close()
+
+
+def _evaluate_owned_population(config: ResultsApiConfig, job_store: JobStore, outer_job_id: str, run_id: str,
                          provider, input_digest: str, config_digest: str, rows: dict,
                          population_complete: bool, refresh: bool,
-                         client_factory: Callable[[], object], ownership: WorkerOwnership) -> None:
+                         client_factory: Callable[[], object], ownership: WorkerOwnership,
+                         row_id=None, bundle=None) -> None:
     try:
         ownership.require(outer_job_id)
         cache = FixtureCache(config.cache_root())
         quota = QuotaTracker(config.quota_root(), "api_football", config.daily_quota)
-        dates = _dates_needed(rows)
+        bundle = bundle or freeze_local_sources(config.identity_config_path)
+        checked = set(rows) if row_id is None else {row_id}
+        previous_fixtures = []
+        previous_raw_sources = []
+        previous_errors = {}
+        try:
+            previous = get_latest_report(config, run_id)
+            manifest, previous_report = _verified_revision_report(config, run_id, previous["revision_id"])
+            if manifest["input_digest"] == input_digest and manifest["config_digest"] == config_digest:
+                checked.update(previous_report.get("checked_row_ids", []))
+                prior_evidence = json.loads((config.revisions_root(run_id) / previous["revision_id"] / "evidence.json").read_bytes())
+                previous_fixtures = prior_evidence.get("fixtures", [])
+                previous_raw_sources = prior_evidence.get("raw_sources", [])
+                previous_errors = prior_evidence.get("retrieval_errors", {})
+        except ReportNotFoundError:
+            pass
+        selected_rows = {key: value for key, value in rows.items() if key in checked}
+        fetch_rows = selected_rows if row_id is None else {row_id: rows[row_id]}
+        dates = _dates_needed(fetch_rows)
         incomplete: tuple = ()
+        access_errors = dict(previous_errors)
+        for date in dates:
+            access_errors.pop(date, None)
+        network_enabled = config.network_enabled and bundle["network_enabled"]
+        client = None
+        if network_enabled and bundle["fixtures"]:
+            local_report = evaluate_run({
+                "fixtures": [_fixture_to_evidence_dict(f) for f in bundle["fixtures"]],
+                "aliases": bundle["aliases"], "verified_mappings": bundle["verified_mappings"],
+                "tickets": [_ticket_to_evidence(k, t, provider) for k, t in fetch_rows.items()
+                            if _can_evaluate_ticket(t)]})
+            missing_dates = set()
+            for ticket in local_report["tickets"]:
+                for leg in ticket["legs"]:
+                    if leg["rule_id"] and leg["status"] in ("pending", "unresolved"):
+                        raw = (leg["selection"].get("kickoff") or {}).get("raw")
+                        missing_dates.update(_dates_needed({"r": {"selections": [{"kickoff": raw}]}}))
+            dates = sorted(missing_dates)
 
-        if dates:
+        if dates and network_enabled:
             inner = job_store.create_or_reuse(f"{run_id}:fetch", input_digest, config_digest)
             job_store.update(outer_job_id, lambda r: r["progress"].update(fetch_job_id=inner.job_id))
             if job_store.get(outer_job_id).cancel_requested:
@@ -650,29 +807,41 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
             try:
                 client = client_factory()
             except ApiFootballError as exc:
-                job_store.update(outer_job_id, lambda r: r.update(
-                    state=JobState.FAILED, error={"code": "source_unavailable", "message": str(exc)}))
-                return
-            fetch_one = _make_fetch_one(client, cache, quota, refresh=refresh)
+                if not config.tolerate_incomplete_fetch:
+                    job_store.update(outer_job_id, lambda r: r.update(
+                        state=JobState.FAILED, error={"code": "source_unavailable", "message": str(exc)}))
+                    return
+                client = None
+                access_errors.update({d: {"code": "source_unavailable", "message": str(exc)} for d in dates})
+            fetch_one = _make_fetch_one(client, cache, quota, refresh=refresh, access_errors=access_errors) if client is not None else None
             budget = JobBudget(max_requests=config.max_requests_per_job, max_retries=config.max_retries,
                                 per_call_timeout=config.per_call_timeout, max_workers=config.max_workers,
                                 retry_backoff_base=config.retry_backoff_base,
                                 retry_backoff_max=config.retry_backoff_max)
             tasks = [Task(key=date, payload=date) for date in dates]
             try:
-                outcome = run_result_job(job_store, inner.job_id, tasks, fetch_one=fetch_one, budget=budget)
+                if fetch_one is None:
+                    job_store.update(inner.job_id, lambda r: r.update(state=JobState.FAILED))
+                    outcome = None
+                else:
+                    outcome = run_result_job(job_store, inner.job_id, tasks, fetch_one=fetch_one, budget=budget)
             except FatalTaskError as exc:
-                job_store.update(outer_job_id, lambda r: r.update(
-                    state=JobState.FAILED, error={"code": "fatal_fetch_error", "message": str(exc)}))
-                return
+                if not config.tolerate_incomplete_fetch:
+                    job_store.update(outer_job_id, lambda r: r.update(
+                        state=JobState.FAILED, error={"code": "fatal_fetch_error", "message": str(exc)}))
+                    return
+                access_errors.update({d: {"code": "source_unavailable", "message": str(exc)} for d in dates})
+                outcome = None
             except JobError as exc:
                 job_store.update(outer_job_id, lambda r: r.update(
                     state=JobState.FAILED, error={"code": "fetch_job_error", "message": str(exc)}))
                 return
-            if outcome.cancelled:
+            if outcome is not None and outcome.cancelled:
                 job_store.update(outer_job_id, lambda r: r.update(state=JobState.CANCELLED))
                 return
-            incomplete = outcome.incomplete_task_keys
+            incomplete = outcome.incomplete_task_keys if outcome is not None else tuple(dates)
+            for date in incomplete:
+                access_errors.setdefault(date, {"code": "source_fetch_incomplete", "message": "Retrieval did not complete"})
             if incomplete and not config.tolerate_incomplete_fetch:
                 job_store.update(outer_job_id, lambda r: r.update(
                     state=JobState.FAILED, error={
@@ -686,26 +855,43 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
             return
 
         fixtures = []
+        raw_sources = list(bundle["raw_sources"]) + previous_raw_sources
+        for date, raw in list(getattr(client, "raw_observations", {}).items()):
+            raw_sources.append({"kind": "api_football_http", "date": date,
+                "sha256": hashlib.sha256(raw).hexdigest(), "base64": base64.b64encode(raw).decode("ascii")})
         for date in dates:
-            if date not in incomplete:
-                fixtures.extend(_fixtures_for_date(cache, date))
-
-        try:
-            aliases, verified_mappings = load_identity_evidence(config)
-        except ResultsApiError as exc:
-            job_store.update(outer_job_id, lambda r: r.update(
-                state=JobState.FAILED, error={"code": "invalid_identity_config", "message": str(exc)}))
-            return
-
+            entry = cache.get(_cache_key_for_date(date))
+            if entry is not None:
+                raw = entry.raw_bytes
+                raw_sources.append({"kind": "api_football", "sha256": hashlib.sha256(raw).hexdigest(),
+                                    "base64": base64.b64encode(raw).decode("ascii")})
+                cached = json.loads(raw)
+                if isinstance(cached, dict) and "access_error" in cached:
+                    access_errors.setdefault(date, {"code": "source_access_restricted", "message": cached["access_error"]})
+                fixtures.extend(_fixtures_from_entry(entry))
+            if not network_enabled:
+                access_errors.setdefault(date, {"code": "source_network_disabled", "message": "Using local evidence only"})
+        # A revision freezes every source observation it actually uses. Local imports
+        # are independent observations; disagreements remain ambiguous, never guessed.
+        normalized = {(f["provenance"]["source"], f["provenance"]["source_fixture_id"]): f for f in previous_fixtures}
+        for fixture in fixtures + list(bundle["fixtures"]):
+            item = _fixture_to_evidence_dict(fixture)
+            normalized[(item["provenance"]["source"], item["provenance"]["source_fixture_id"])] = item
         evidence = {
-            "fixtures": [_fixture_to_evidence_dict(f) for f in fixtures],
-            "aliases": aliases, "verified_mappings": verified_mappings,
+            "fixtures": list(normalized.values()),
+            "raw_sources": list({(r["kind"], r["sha256"]): r for r in raw_sources}.values()),
+            "retrieval_errors": access_errors,
+            "checked_row_ids": sorted(checked),
+            "original_tickets": rows,
+            "population_complete": population_complete,
+            "ticket_structures": bundle["ticket_structures"],
+            "aliases": bundle["aliases"], "verified_mappings": bundle["verified_mappings"],
             # A malformed row (not a dict) is never supplied here -- it has
             # no usable ticket content to convert -- but it is still a key
             # in audit_rows above, so evaluate_run reports it as an
             # explicit unresolved row instead of a silently shrunk N.
-            "tickets": [_ticket_to_evidence(row_id, ticket, provider) for row_id, ticket in rows.items()
-                        if isinstance(ticket, dict)],
+            "tickets": [_ticket_to_evidence(row_id, ticket, provider) for row_id, ticket in selected_rows.items()
+                        if _can_evaluate_ticket(ticket)],
         }
         audit_rows = _build_audit_rows(provider, rows)
         try:
@@ -718,7 +904,7 @@ def _run_evaluation_job(config: ResultsApiConfig, job_store: JobStore, outer_job
         # claim (F9_RESULTS_PLAN.md): population_complete=False marks every
         # report built from a frozen checkpoint rather than a committed
         # extract.
-        report["population_complete"] = population_complete
+
 
         try:
             staged = _stage_revision(config, run_id, evidence, report, audit_rows=audit_rows,

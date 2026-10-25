@@ -80,6 +80,43 @@ class ResultsRouteTestBase(RegistryTestBase):
         self.fail(f'job {job_id} never reached a terminal state; last: {record}')
 
 
+class HistoricalResultsRouteTests(ResultsRouteTestBase):
+    def test_saved_population_and_individual_check_through_real_transport(self):
+        run_id = self.committed_run()
+        status, saved = self.request('GET', f'/api/results/{run_id}/codes?view=saved&limit=1')
+        self.assertEqual(status, 200, saved)
+        self.assertGreater(saved['total'], 0)
+        self.assertEqual(saved['rows'][0]['reason'], 'not_checked')
+        self.assertIn('selections', saved['rows'][0]['original_ticket'])
+        row_id = saved['rows'][0]['row_id']
+        status, job = self.request('POST', f'/api/results/{run_id}', {'row_id': row_id})
+        self.assertEqual(status, 202, job)
+        final = self.wait_for_terminal_job(job['job_id'])
+        self.assertEqual(final['state'], 'succeeded', final)
+        status, summary = self.request('GET', f'/api/results/{run_id}')
+        self.assertEqual(status, 200)
+        self.assertEqual(summary['counts']['total'], saved['total'])
+        self.assertEqual(summary['checked_count'], 1)
+        revision = summary['revision_id']
+        status, focused = self.request('GET', f'/api/results/{run_id}/codes?revision={revision}&row_id={row_id}')
+        self.assertEqual(status, 200, focused)
+        self.assertEqual(focused['total'], saved['total'])
+        self.assertEqual(focused['filtered_total'], 1)
+        self.assertEqual(focused['rows'][0]['row_id'], row_id)
+        status, page = self.request('GET', f'/api/results/{run_id}/codes?revision={revision}&status=won')
+        self.assertEqual(status, 200)
+        self.assertEqual(page['total'], saved['total'])
+        self.assertEqual(page['filtered_total'], 0)
+
+    def test_untrusted_row_selectors_and_snapshot_changes_are_rejected(self):
+        run_id = self.committed_run()
+        for value, expected in [(False, 400), (None, 400), ('foreign-row', 422)]:
+            status, _ = self.request('POST', f'/api/results/{run_id}', {'row_id': value})
+            self.assertEqual(status, expected)
+        status, _ = self.request('GET', f'/api/results/{run_id}/codes?view=saved&snapshot=changed')
+        self.assertEqual(status, 422)
+
+
 class CrossRunTraversalTests(ResultsRouteTestBase):
     def test_codes_revision_cannot_cross_into_another_run(self):
         run_a = self.committed_run(seed='AbC1234')

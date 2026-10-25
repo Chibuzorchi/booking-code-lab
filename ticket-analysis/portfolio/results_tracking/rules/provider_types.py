@@ -39,10 +39,33 @@ VERIFIED_NAIVE_UTC_FIXTURES = frozenset({
 })
 
 
-def verify_bet_type(provider: str, raw_value: str) -> dict:
-    """No documented mapping exists for either provider's bet-structure
-    field (checked by direct codebase search, not assumed). Always
-    unverified; callers must not guess single/multiple/system from this."""
+def verify_bet_type(provider: str, raw_value: str, *, row_id=None, selected_systems=None,
+                    records=(), num_legs=None) -> dict:
+    """Default to unverified. A server-reviewed attestation can enable only
+    its exact frozen row and original provider fields, with an explicit ordinary
+    settlement policy. Never infer single/accumulator/system from a label alone.
+    """
+    matches = []
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("ticket structure records must be objects")
+        if record.get("row_id") != row_id or record.get("provider") != provider:
+            continue
+        if not row_id or record.get("raw_value") != raw_value or record.get("selected_systems") != selected_systems:
+            continue
+        if (record.get("structure") not in ("single", "ordinary_accumulator")
+                or not isinstance(record.get("evidence"), str) or not record["evidence"].strip()
+                or record.get("settlement_policy") != "ordinary_regulation_no_promotions"):
+            continue
+        if record["structure"] == "single" and num_legs != 1:
+            continue
+        matches.append(record)
+    if matches:
+        if len({r["structure"] for r in matches}) != 1:
+            raise ValueError("conflicting ticket structure verification")
+        return {"provider": provider, "raw_value": raw_value, "status": "verified",
+                "structure": matches[0]["structure"], "evidence": matches[0]["evidence"],
+                "reason": "reviewed_frozen_ticket_structure"}
     return {
         "provider": provider,
         "raw_value": raw_value,
