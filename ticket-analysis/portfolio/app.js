@@ -19,6 +19,167 @@ let poller = null, pollGen = -1;
 let historyRequest = 0;
 const analysisRequest = {s1: null, s2: null, s3: null};
 
+/* Navigation changes which existing panel is visible; it does not own analysis
+   results or invalidate requests when the selected provider/run stays the same. */
+const SECTIONS = {
+  scan: {panel: 's1', title: 'Scan Codes'},
+  runs: {panel: 'saved-runs', title: 'Saved Runs'},
+  distinct: {panel: 's2', title: 'Distinct Codes'},
+  decorrelate: {panel: 's3', title: 'De-correlate'},
+  results: {panel: 'historical-results', title: 'Historical Results'},
+};
+const PROVIDER_NAMES = {bet9ja: 'Bet9ja', sportybet: 'SportyBet'};
+const STATE_NAMES = {starting: 'Starting', running: 'Running', succeeded: 'Completed',
+  failed: 'Failed', launch_failed: 'Could not start', cancelled: 'Cancelled',
+  cancelled_unresolved: 'Cancellation pending', unknown: 'Completion unknown'};
+let section = 'scan', routeToken = 0, pendingRun = null, handledHash = null;
+const sectionScroll = Object.create(null);
+
+function routeHash(target = section) {
+  const query = new URLSearchParams({provider});
+  const run = pendingRun || (view.run && view.run.run_id);
+  if (run) query.set('run', run);
+  return '#' + target + '?' + query;
+}
+
+function syncRoute(push = false) {
+  const hash = routeHash();
+  if (window.location.hash !== hash) window.history[push ? 'pushState' : 'replaceState'](null, '', hash);
+  handledHash = hash;
+  renderContext();
+}
+
+function renderContext() {
+  const run = view.run;
+  let date = '';
+  if (run && run.started_at && Number.isFinite(Date.parse(run.started_at))) {
+    date = new Date(run.started_at).toLocaleString(undefined,
+      {year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short'});
+  }
+  $('context-run').textContent = pendingRun ? 'Loading saved run…' : run
+    ? [PROVIDER_NAMES[provider], date, 'Seed ' + seedText(run)].filter(Boolean).join(' · ')
+    : 'No run selected';
+  $('context-state').textContent = view.submission ? 'Submitting scan…' : run
+    ? (STATE_NAMES[run.state] || run.state) : 'Choose a saved run or start a scan.';
+  $('context-details').hidden = !run;
+  $('context-id').textContent = run ? run.run_id : '';
+  $('change-run').textContent = run ? 'Change run' : 'Choose a run';
+  $('change-run').setAttribute('href', routeHash('runs'));
+  for (const key of Object.keys(SECTIONS)) $('nav-' + key).setAttribute('href', routeHash(key));
+}
+
+function setNavigation(open) {
+  $('app-sidebar').hidden = !open;
+  $('app-layout').className = open ? 'app-layout' : 'app-layout nav-closed';
+  $('nav-toggle').setAttribute('aria-expanded', String(open));
+  $('nav-toggle').textContent = open ? 'Hide navigation' : 'Show navigation';
+}
+
+function navigateSection(next, {write = true, focus = true} = {}) {
+  if (!SECTIONS[next]) next = 'scan';
+  if (section !== next) sectionScroll[section] = window.scrollY;
+  const changed = section !== next;
+  section = next;
+  for (const [key, config] of Object.entries(SECTIONS)) {
+    $(config.panel).hidden = key !== section;
+    if (key === section) $('nav-' + key).setAttribute('aria-current', 'page');
+    else $('nav-' + key).removeAttribute('aria-current');
+  }
+  $('page-title').textContent = SECTIONS[section].title;
+  document.title = SECTIONS[section].title + ' · Booking codes';
+  if (write) syncRoute(true);
+  if (focus) {
+    if (window.matchMedia('(max-width:850px)').matches) setNavigation(false);
+    // On a return to a scrolled view, focus its labelled workspace rather than
+    // leaving keyboard focus on a heading above the viewport.
+    $(sectionScroll[section] ? 'workspace' : 'page-title').focus({preventScroll: true});
+  }
+  if (changed) window.scrollTo(0, sectionScroll[section] || 0);
+}
+
+async function restoreRoute() {
+  if (handledHash === window.location.hash) return;
+  handledHash = window.location.hash;
+  const [requestedSection, search = ''] = window.location.hash.slice(1).split('?');
+  const query = new URLSearchParams(search);
+  const nextSection = SECTIONS[requestedSection] ? requestedSection : 'scan';
+  const requestedProvider = query.get('provider') || 'bet9ja';
+  const nextProvider = PROVIDER_NAMES[requestedProvider] ? requestedProvider : 'bet9ja';
+  let nextRun = query.get('run') || '';
+  let problem = PROVIDER_NAMES[requestedProvider] ? '' : 'Unknown provider in the link. Choose a saved run.';
+  if (nextRun && !new RegExp('^run-' + nextProvider + '-[0-9]{8}-[0-9]{6}-[a-f0-9]{8}$').test(nextRun)) {
+    nextRun = '';
+    problem = 'Invalid run link. Choose a saved run.';
+  }
+  fail('navigation-error', problem);
+  // Browser history must obey the same submission guard as the run selector.
+  const remembered = nextProvider === provider ? view : saved[nextProvider];
+  if (remembered && remembered.submission) {
+    if (nextProvider !== provider) {
+      $('provider').value = nextProvider;
+      switchProvider({syncURL: false});
+    }
+    navigateSection(nextSection, {write: false});
+    syncRoute();
+    if (nextRun) fail('navigation-error', 'Wait for scan submission before changing runs.');
+    return;
+  }
+  if (nextProvider === provider && (nextRun === (pendingRun || (view.run && view.run.run_id) || ''))) {
+    navigateSection(nextSection, {write: false});
+    syncRoute();
+    return;
+  }
+  const token = ++routeToken;
+  saved[provider] = view;
+  invalidate();
+  pendingRun = null;
+  provider = nextProvider;
+  $('provider').value = provider;
+  view = remembered && remembered.run && remembered.run.run_id === nextRun ? remembered : blankView();
+  seedHint();
+  restore();
+  refreshRuns();
+  navigateSection(nextSection, {write: false});
+  if (!nextRun || view.run) { syncRoute(); return; }
+  pendingRun = nextRun;
+  $('s1-run').disabled = $('runs-load').disabled = true;
+  renderContext();
+  try {
+    // Reload restores only the run and saved tickets. Analyses and result-check
+    // jobs remain explicit user actions; never serialize reports into the URL.
+    const status = await api('GET', '/api/scan/' + encodeURIComponent(nextRun));
+    if (token !== routeToken) return;
+    if (status.provider !== provider || status.run_id !== nextRun)
+      throw new Error('The saved run does not match this link.');
+    showRun(status);
+    loadCodes();
+    if (ACTIVE.has(status.state)) startPolling();
+  } catch (error) {
+    if (token === routeToken) fail('navigation-error', 'Could not restore this run: ' + error.message);
+  } finally {
+    if (token === routeToken) {
+      pendingRun = null;
+      $('s1-run').disabled = Boolean(view.submission || (view.run && ACTIVE.has(view.run.state)));
+      $('runs-load').disabled = $('runs').disabled || Boolean(view.submission);
+      syncRoute();
+    }
+  }
+}
+
+function initializeShell() {
+  for (const key of Object.keys(SECTIONS)) $('nav-' + key).addEventListener('click', event => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault(); navigateSection(key);
+  });
+  $('change-run').addEventListener('click', event => { event.preventDefault(); navigateSection('runs'); });
+  $('skip-workspace').addEventListener('click', event => { event.preventDefault(); $('page-title').focus(); });
+  $('nav-toggle').addEventListener('click', () => setNavigation($('app-sidebar').hidden));
+  setNavigation(!window.matchMedia('(max-width:850px)').matches);
+  window.addEventListener('popstate', restoreRoute);
+  window.addEventListener('hashchange', restoreRoute);
+  restoreRoute();
+}
+
 /* Every reply is checked against the generation it was issued under. Anything in
    flight when the user picks another run or provider belongs to the selection they
    left, so it drops itself instead of painting over the current one. */
@@ -208,10 +369,14 @@ function restore() {
     lock('s2', true, 'Waiting for scan submission.');
   }
   if (view.error) fail('s1-error', view.error);
-  $('runs-load').disabled = $('runs').disabled || Boolean(view.submission);
+  $('runs-load').disabled = $('runs').disabled || Boolean(view.submission) || Boolean(pendingRun);
+  renderContext();
 }
 
-function switchProvider() {
+function switchProvider({syncURL = true} = {}) {
+  routeToken += 1;
+  pendingRun = null;
+  fail('navigation-error', '');
   saved[provider] = view;
   invalidate();                   // drop replies for the provider being left
   provider = $('provider').value;
@@ -219,6 +384,7 @@ function switchProvider() {
   seedHint();
   restore();
   refreshRuns();
+  if (syncURL) syncRoute(true);
 }
 
 /* A fresh-seed run has no seed until its worker books one, so "booking…" is
@@ -261,6 +427,7 @@ function showRun(status) {
   lock('s2', !ready, ready
     ? `Run ${status.run_id} committed its extract. Stage 2 reads that exact snapshot.`
     : `Locked until a run reaches "succeeded" with a committed extract; this one is ${status.state}.`);
+  renderContext();
 }
 
 function stopPolling() {
@@ -313,7 +480,7 @@ function optionalInteger(id, name, minimum) {
 
 async function startScan(event) {
   event.preventDefault();
-  if (view.submission || (view.run && ACTIVE.has(view.run.state))) return;
+  if (pendingRun || view.submission || (view.run && ACTIVE.has(view.run.state))) return;
   fail('s1-error', '');
   let body;
   try {
@@ -338,6 +505,7 @@ async function startScan(event) {
   owner.error = null;
   owner.run = owner.codes = owner.codesAsked = owner.stage2 = owner.stage3 = null;
   restore();
+  syncRoute();
   try {
     const status = await api('POST', '/api/scan', body);
     if (owner.submission !== token) return;
@@ -352,6 +520,7 @@ async function startScan(event) {
       if (view === owner) {
         invalidate();
         restore();
+        syncRoute();
       }
     }
   }
@@ -396,7 +565,7 @@ async function refreshRuns() {
       select.append(option);
     }
     select.disabled = false;
-    $('runs-load').disabled = Boolean(view.submission);
+    $('runs-load').disabled = Boolean(view.submission) || Boolean(pendingRun);
     $('runs-note').textContent = `${history.runs.length} run(s) recorded for ${which}.`
       + ' Only a run that committed an extract can feed stages 2 and 3.';
   } catch (e) {
@@ -405,7 +574,7 @@ async function refreshRuns() {
 }
 
 async function loadRun() {
-  if ($('runs').disabled || view.submission) return;
+  if ($('runs').disabled || view.submission || pendingRun) return;
   const run_id = $('runs').value;
   if (!run_id) return;
   fail('s1-error', '');
@@ -418,6 +587,7 @@ async function loadRun() {
     showRun(status);              // clears both stages, since the run id changed
     loadCodes();
     if (ACTIVE.has(status.state)) startPolling();
+    return true;
   } catch (e) {
     if (mine !== gen) return;
     fail('s1-error', e.message);
@@ -709,14 +879,14 @@ async function checkSavedCode(rowId = null, expectedRun = null) {
   if (!run || (expectedRun && run.run_id !== expectedRun)) return;
   if (run.state !== 'succeeded' && !$('results-partial').checked) {
     fail('results-error', 'Enable “Use incomplete saved history” before checking this stopped run.');
-    $('historical-results').scrollIntoView({behavior:'smooth', block:'start'});
+    navigateSection('results');
     return;
   }
   if (view.results && view.results.job) {
-    $('historical-results').scrollIntoView({behavior:'smooth', block:'start'});
+    navigateSection('results');
     return;
   }
-  $('historical-results').scrollIntoView({behavior:'smooth', block:'start'});
+  navigateSection('results');
   await checkResults(rowId);
 }
 $('s1-check-results').addEventListener('click', () => checkSavedCode());
@@ -1092,7 +1262,12 @@ $('s1-cancel').addEventListener('click', cancelScan);
 $('provider').addEventListener('change', switchProvider);
 $('fresh_seed').addEventListener('change', seedHint);
 $('runs-refresh').addEventListener('click', refreshRuns);
-$('runs-load').addEventListener('click', loadRun);
+$('runs-load').addEventListener('click', async () => {
+  if (await loadRun()) {
+    if (section === 'runs') navigateSection('scan');
+    else syncRoute(true);
+  }
+});
 $('s2-run').addEventListener('click', findDistinct);
 
 /* Re-listing is a repaint of the report already in hand: no request is made,
@@ -1149,3 +1324,4 @@ $('max_exposure').addEventListener('input', () => {
 window.addEventListener('beforeunload', stopPolling);
 seedHint();
 refreshRuns();
+initializeShell();

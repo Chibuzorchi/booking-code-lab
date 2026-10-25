@@ -2,13 +2,38 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Harvest → Distinct → De-correlate · Historical results</title>
 <style>__APP_CSS__</style></head><body>
-<header>
-  <div class="eyebrow">Local run console · paper only</div>
-  <h1>Harvest → Distinct → De-correlate</h1>
-  <p>Three stages against the local API on this machine. Nothing here places a bet or stakes money.
-  Every odds figure is the same basis the scan recorded and is labelled <b>recorded, not verified payout</b>.</p>
+<a id="skip-workspace" class="skip-link" href="#page-title">Skip to workspace</a>
+<div class="app-layout" id="app-layout">
+<aside class="app-sidebar" id="app-sidebar">
+  <p class="app-name">Booking codes</p>
+  <p class="sidebar-caption">Local workspace</p>
+  <nav id="app-nav" aria-label="Main navigation">
+    <a id="nav-scan" href="#scan" aria-current="page">Scan Codes</a>
+    <a id="nav-runs" href="#runs">Saved Runs</a>
+    <a id="nav-distinct" href="#distinct">Distinct Codes</a>
+    <a id="nav-decorrelate" href="#decorrelate">De-correlate</a>
+    <a id="nav-results" href="#results">Historical Results</a>
+  </nav>
+  <p class="sidebar-note">No bets are placed here. Odds are <b>recorded, not verified payout</b>.</p>
+</aside>
+<div class="app-workspace">
+<header class="app-topbar">
+  <div class="workspace-controls">
+    <button id="nav-toggle" type="button" aria-controls="app-sidebar" aria-expanded="true">Hide navigation</button>
+    <label>Provider<select id="provider"><option value="bet9ja">Bet9ja</option><option value="sportybet">SportyBet</option></select></label>
+  </div>
+  <div class="run-context" aria-label="Selected run">
+    <span class="context-label">Selected run</span>
+    <strong id="context-run">No run selected</strong>
+    <span id="context-state" role="status"></span>
+    <a id="change-run" href="#runs">Choose a run</a>
+    <details id="context-details" hidden><summary>Run details</summary><code id="context-id"></code></details>
+  </div>
 </header>
-<main>
+<main id="workspace" tabindex="-1" aria-labelledby="page-title">
+<h1 id="page-title" tabindex="-1">Scan Codes</h1>
+<p id="navigation-error" class="error" role="alert" hidden></p>
+<p class="error" id="s1-error" role="alert" aria-atomic="true" hidden></p>
 <noscript>This console needs JavaScript: each stage is a request to the local API.</noscript>
 
 <section class="panel" id="s1" aria-labelledby="s1-h">
@@ -18,7 +43,6 @@
   <form id="scan-form">
     <fieldset id="s1-fields">
       <div class="grid">
-        <label>Provider<select id="provider"><option value="bet9ja">bet9ja</option><option value="sportybet">sportybet</option></select></label>
         <label>Seed code<span id="seed-hint">7 characters, case kept</span><input id="seed" autocapitalize="off" autocomplete="off" spellcheck="false" required></label>
         <label class="check"><span class="row"><input id="fresh_seed" type="checkbox">Book a fresh code</span><span>The run opens the provider in a browser, books one coupon, and scans from that code.</span></label>
         <label>Min odds<span>blank = no floor</span><input id="min_odds" type="number" min="0" step="any"></label>
@@ -32,7 +56,6 @@
       </details>
     </fieldset>
   </form>
-  <p class="error" id="s1-error" role="alert" aria-atomic="true" hidden></p>
   <p class="notice" id="s1-state" role="status" aria-live="polite">No run yet.</p>
   <ul class="facts" id="s1-counters" hidden></ul>
   <div id="s1-codes" hidden>
@@ -52,7 +75,11 @@
     <div id="s1-cards"></div>
     <div class="bar" id="s1-pager" hidden><button id="s1-prev" type="button">‹ Prev</button><p id="s1-page-info"></p><button id="s1-next" type="button">Next ›</button></div>
   </div>
-  <details class="more" id="s1-history"><summary>Earlier runs on this machine</summary>
+</section>
+
+<section class="panel" id="saved-runs" aria-labelledby="runs-heading" hidden>
+  <h2 id="runs-heading">Earlier runs on this machine</h2>
+  <div id="s1-history">
     <div class="grid">
       <label>Run<select id="runs"><option value="">— none loaded —</option></select></label>
       <button id="runs-refresh" type="button">Refresh list</button>
@@ -60,12 +87,12 @@
       <button id="runs-check-results" type="button">Check selected run’s results</button>
     </div>
     <p class="notice" id="runs-note">Only a run that committed an extract can feed stages 2 and 3.</p>
-  </details>
+  </div>
 </section>
 
-<section class="panel" id="historical-results" aria-labelledby="results-heading">
+<section class="panel" id="historical-results" aria-labelledby="results-heading" hidden>
   <h2 id="results-heading">Historical results</h2>
-  <p class="notice">Open an earlier run above to check its original saved codes. Started games and overlapping codes are included.</p>
+  <p class="notice">Choose a run in Saved Runs to check its original saved codes. Started games and overlapping codes are included.</p>
   <div class="grid">
     <button id="results-open" type="button" disabled>Open saved results</button>
     <button id="results-check-all" type="button" disabled>Check all results</button>
@@ -90,7 +117,7 @@
   </div>
 </section>
 
-<section class="panel" id="s2" aria-labelledby="s2-h" aria-disabled="true">
+<section class="panel" id="s2" aria-labelledby="s2-h" aria-disabled="true" hidden>
   <h2 id="s2-h"><span class="step">2</span> Distinct codes</h2>
   <p class="notice" id="s2-lock">Locked until a scan on this page has committed an extract.</p>
   <fieldset id="s2-fields" disabled>
@@ -113,7 +140,7 @@
   <details class="more" id="s2-more" hidden><summary>Most-reused game + option</summary><div class="scroll" id="s2-top"></div></details>
 </section>
 
-<section class="panel" id="s3" aria-labelledby="s3-h" aria-disabled="true">
+<section class="panel" id="s3" aria-labelledby="s3-h" aria-disabled="true" hidden>
   <h2 id="s3-h"><span class="step">3</span> De-correlate</h2>
   <p class="notice" id="s3-lock">Locked until stage 2 has a result for this run.</p>
   <fieldset id="s3-fields" disabled>
@@ -133,5 +160,7 @@
   <details class="more" id="s3-more" hidden><summary>Why codes were left out</summary><div class="scroll" id="s3-rejected"></div></details>
 </section>
 </main>
+</div>
+</div>
 <script>__COPY_JS__</script>
 <script>__APP_JS__</script></body></html>

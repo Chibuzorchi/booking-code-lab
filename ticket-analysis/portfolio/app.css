@@ -2,13 +2,13 @@
 :root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#182b29;background:#f4f6f3;font-size:15px;color-scheme:light}
 *{box-sizing:border-box}body{margin:0}button,input,select,textarea{font:inherit}button,select{cursor:pointer}
 [hidden]{display:none!important}
-button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid #bb690c;outline-offset:3px}
-header{background:#123e35;color:#fff;padding:32px max(24px,calc((100vw - 1120px)/2))}
-.eyebrow{text-transform:uppercase;letter-spacing:.15em;font-size:12px;font-weight:700;color:#b4d5c5}
-h1{font-size:32px;margin:8px 0;font-weight:650;letter-spacing:-.5px}
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid #bb690c;outline-offset:3px}
+
+
+h1{font-size:28px;margin:0 0 20px;font-weight:650;letter-spacing:-.5px}
 #historical-results p{overflow-wrap:anywhere}
-header p{color:#d1e1d8;max-width:760px;line-height:1.6;margin:0}
-main{max-width:1120px;margin:auto;padding:24px 24px 64px}
+
+main{max-width:1280px;width:100%;margin:auto;padding:24px 28px 64px}
 .panel{background:#fff;border:1px solid #dce4dc;border-radius:14px;margin-bottom:18px;padding:22px}
 h2{font-size:19px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
 h3{font-size:15px;margin:22px 0 0}
@@ -59,3 +59,28 @@ label.check input{width:18px;height:18px;min-width:0;min-height:0;flex:none;acce
 noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin-bottom:18px}
 @media(max-width:700px){h1{font-size:26px}main{padding:16px 12px 48px}.panel{padding:16px}
 .ticket summary{gap:12px}.ticket-code{flex-basis:100%}.ticket-actions{margin-left:0}.chev{display:none}label{width:100%}input,select{width:100%}}
+
+/* Application shell. Workflow controls keep their existing layout and behavior. */
+a{color:#184b3e;text-underline-offset:3px}
+.app-layout{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:100vh}
+.app-layout.nav-closed{grid-template-columns:minmax(0,1fr)}
+.app-sidebar{position:sticky;top:0;height:100vh;padding:28px 18px;background:#edf2ee;border-right:1px solid #d0dcd3;display:flex;flex-direction:column;gap:8px}
+.app-name{font-size:19px;font-weight:700;margin:0 10px}.sidebar-caption{margin:0 10px 24px;color:#5c6c64;font-size:13px}
+#app-nav{display:flex;flex-direction:column;gap:6px}#app-nav a{padding:12px;border-radius:7px;text-decoration:none;font-weight:600;min-height:44px}
+#app-nav a:hover{background:#e0e9e2}#app-nav a[aria-current=page]{background:#1c5344;color:#fff}
+.sidebar-note{margin:auto 10px 0;padding-top:24px;font-size:12px;line-height:1.6;color:#5c6c64}
+.app-workspace{min-width:0}.app-topbar{padding:18px 28px;border-bottom:1px solid #d0dcd3;background:#fff;display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+.workspace-controls{display:flex;align-items:end;gap:16px;flex-wrap:wrap}.workspace-controls label{min-width:140px}
+.run-context{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 18px;flex:1;min-width:220px;max-width:680px;font-size:13px}
+.context-label{font-size:12px;color:#5c6c64}.run-context strong{grid-column:1;overflow-wrap:anywhere;font-size:15px}
+#context-state{grid-column:1;color:#5c6c64}#change-run{grid-column:2;grid-row:1/4;align-self:center;padding:10px 0;min-height:44px}
+#context-details{grid-column:1/-1;color:#5c6c64}#context-details summary{cursor:pointer;padding:4px 0}#context-id{display:block;overflow-wrap:anywhere;padding-top:6px}
+#saved-runs .grid label{min-width:0;max-width:100%;flex:1 1 100%}#runs{max-width:100%;width:100%}
+#page-title:focus{outline:none}.skip-link{position:fixed;top:8px;left:8px;transform:translateY(-200%);z-index:2;padding:12px;background:#fff;border:2px solid #184b3e}.skip-link:focus{transform:none}
+@media(max-width:850px){
+ .app-layout{display:block}.app-sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid #d0dcd3;padding:18px}
+ .sidebar-caption{margin-bottom:8px}.sidebar-note{display:none}#app-nav{flex-direction:row;flex-wrap:wrap}
+ .app-topbar{padding:16px;gap:16px}.workspace-controls{width:100%;justify-content:space-between}.workspace-controls label{width:auto}
+ .run-context{min-width:0;width:100%;max-width:none}main{padding:20px 16px 48px}
+}
+@media(max-width:400px){.workspace-controls{align-items:stretch}.workspace-controls label{flex:1}.run-context{column-gap:10px}}

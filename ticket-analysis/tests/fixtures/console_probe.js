@@ -31,6 +31,7 @@ class El {
     this.checked = false;
   }
   scrollIntoView() {}
+  focus() {}
   querySelectorAll(tag) {
     return this.childNodes.flatMap(child => [
       ...(child.tagName === tag.toUpperCase() ? [child] : []), ...child.querySelectorAll(tag)]);
@@ -40,6 +41,7 @@ class El {
   appendChild(kid) { this.childNodes.push(kid); return kid; }
   replaceChildren(...kids) { this.childNodes = kids; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
+  removeAttribute(name) { delete this.attributes[name]; }
   getAttribute(name) { return this.attributes[name]; }
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
   fire(type) {
@@ -76,8 +78,14 @@ function boot(values) {
   }));
   const setIntervalStub = fn => { const id = nextTimer++; world.timers.set(id, fn); return id; };
   const clearIntervalStub = id => { world.timers.delete(id); };
+  const window = {location: {hash: ''}, scrollY: 0, addEventListener() {}, scrollTo() {},
+    matchMedia: () => ({matches: false})};
+  window.history = {
+    pushState(_state, _title, hash) { window.location.hash = hash; },
+    replaceState(_state, _title, hash) { window.location.hash = hash; },
+  };
   new Function('document', 'window', 'fetch', 'setInterval', 'clearInterval', 'setTimeout', 'Copy', SOURCE)(
-    document, {addEventListener() {}}, fetch, setIntervalStub, clearIntervalStub, fn => fn(),
+    document, window, fetch, setIntervalStub, clearIntervalStub, fn => fn(),
     {button(el, value) { world.copied.push(value); return true; },
      text() { return true; }, flash() {}, offer() {}, shortcut: () => 'Ctrl-C'});
   return world;
