@@ -37,29 +37,48 @@
 <noscript>This console needs JavaScript: each stage is a request to the local API.</noscript>
 
 <section class="panel" id="s1" aria-labelledby="s1-h">
-  <h2 id="s1-h"><span class="step">1</span> Harvest</h2>
-  <p class="notice">Scans run as a separate worker process, one at a time per provider. Mutation depth is fixed at 3.
-  Booking a fresh code opens a real browser against the provider and takes a while before the scan itself starts; it books a coupon, it never stakes money.</p>
+  <h2 id="s1-h">Start a scan</h2>
+  <p class="notice">Find booking codes from a seed. One scan can run at a time for each provider.</p>
   <form id="scan-form">
     <fieldset id="s1-fields">
-      <div class="grid">
-        <label>Seed code<span id="seed-hint">7 characters, case kept</span><input id="seed" autocapitalize="off" autocomplete="off" spellcheck="false" required></label>
-        <label class="check"><span class="row"><input id="fresh_seed" type="checkbox">Book a fresh code</span><span>The run opens the provider in a browser, books one coupon, and scans from that code.</span></label>
-        <label>Min odds<span>blank = no floor</span><input id="min_odds" type="number" min="0" step="any"></label>
-        <label>Max odds<span>blank = 350,000</span><input id="max_odds" type="number" min="0" step="any"></label>
-        <label>Min legs<span>blank = no floor</span><input id="min_legs" type="number" min="0" step="1"></label>
-        <label>Max legs<span>blank = no ceiling</span><input id="max_legs" type="number" min="0" step="1"></label>
-        <label>How many codes<span>blank/0 = uncapped</span><input id="want_count" type="number" min="0" step="1"></label>
-        <button class="go" id="s1-run" type="submit">Run scan</button>
-        <button id="s1-cancel" type="button" disabled>Cancel</button>
-      </div>
-      <details class="more"><summary>Advanced</summary>
-        <div class="grid"><label>Try budget<span>codes to attempt; blank = 25,000</span><input id="try_budget" type="number" min="1" step="1"></label></div>
+      <fieldset class="scan-group"><legend>Seed source</legend>
+        <div class="seed-options">
+          <label class="seed-option"><input id="seed-typed" type="radio" name="seed-source" checked>Use my code</label>
+          <label class="seed-option"><input id="fresh_seed" type="radio" name="seed-source">Book a fresh code</label>
+        </div>
+        <div class="scan-grid seed-entry">
+          <label>Seed code<span id="seed-hint">7 characters, case kept</span><input id="seed" aria-describedby="seed-hint" autocapitalize="off" autocomplete="off" spellcheck="false" required></label>
+        </div>
+        <p id="fresh-hint" class="notice" hidden>Opens the provider in a browser to book a code before scanning. This can take a while. No money is staked.</p>
+      </fieldset>
+      <fieldset class="scan-group"><legend>Codes to collect</legend>
+        <div class="scan-grid">
+          <label>Min odds<span>blank = no floor</span><input id="min_odds" type="number" min="0" step="any"></label>
+          <label>Max odds<span>blank = 350,000</span><input id="max_odds" type="number" min="0" step="any"></label>
+          <label>Min legs<span>blank = no floor</span><input id="min_legs" type="number" min="0" step="1"></label>
+          <label>Max legs<span>blank = no ceiling</span><input id="max_legs" type="number" min="0" step="1"></label>
+          <label>How many codes<span>maximum to collect; blank/0 = uncapped</span><input id="want_count" type="number" min="0" step="1"></label>
+        </div>
+        <p class="notice">The scan may finish before reaching this count. Odds are recorded, not verified payout.</p>
+      </fieldset>
+      <details class="more scan-advanced"><summary>Advanced scan settings</summary>
+        <div class="scan-grid"><label>Attempt limit<span>codes to try; blank = 25,000</span><input id="try_budget" type="number" min="1" step="1"></label></div>
+        <p class="notice">Limits how much searching the scan does, including uncapped runs.</p>
       </details>
+      <div class="scan-actions"><button class="go" id="s1-run" type="submit">Run scan</button></div>
     </fieldset>
   </form>
-  <p class="notice" id="s1-state" role="status" aria-live="polite">No run yet.</p>
-  <ul class="facts" id="s1-counters" hidden></ul>
+  <section class="scan-status" aria-labelledby="scan-status-heading">
+    <h3 id="scan-status-heading">Scan status</h3>
+    <p id="s1-state" role="status" aria-live="polite">No run yet.</p>
+    <p class="notice" id="s1-guidance">Choose a seed source and set your limits to start.</p>
+    <ul class="facts" id="s1-counters" hidden></ul>
+    <div class="scan-actions">
+      <button id="s1-cancel" type="button" disabled>Cancel scan</button>
+      <button id="s1-refresh" type="button" hidden>Refresh status</button>
+    </div>
+    <details class="more" id="s1-diagnostics" hidden><summary>Scan details and diagnostics</summary><pre id="s1-diagnostic-text"></pre></details>
+  </section>
   <div id="s1-codes" hidden>
     <h3>All codes from this run</h3>
     <p class="error" id="s1-codes-error" role="alert" aria-atomic="true" hidden></p>

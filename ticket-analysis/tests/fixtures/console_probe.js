@@ -187,6 +187,8 @@ const shownCodes = world => world.el('s2-cards').childNodes
 
 const look = world => ({
   state_line: world.el('s1-state').textContent,
+  run_identity: world.el('context-id').textContent,
+  diagnostics: world.el('s1-diagnostic-text').textContent,
   seed_row: (world.el('s1-counters').childNodes
     .map(li => li.childNodes.map(cell => cell.textContent))
     .filter(pair => pair[0] === 'Seed').map(pair => pair[1])[0] || ''),
@@ -732,7 +734,7 @@ scenarios.historical_results = async () => {
   answer(stale,{error:{message:'Old run unavailable'}},422); await settle();
   return {before,rowSelector,focusedRow,checked,pinned,finalPage,filtering,unchanged,
     staleError:w.el('results-error').textContent,hidden:w.el('results-body').hidden,
-    run:w.el('s1-state').textContent};
+    run:w.el('context-id').textContent};
 };
 
 

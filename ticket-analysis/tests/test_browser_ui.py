@@ -132,6 +132,117 @@ class BrowserControlTests(unittest.TestCase):
                 self.assertEqual({k: body[k] for k in ('min_legs', 'max_legs') if k in body}, expected)
                 expect(self.page.locator('#s1-error')).to_contain_text('Fixture submission stopped')
 
+    def test_seed_source_choices_preserve_payload_defaults_and_case(self):
+        sent = []
+        def submit(route):
+            sent.append(route.request.post_data_json)
+            route.fulfill(status=503, json={'error': {'message': 'Fixture stop'}})
+        self.page.route('**/api/scan', submit)
+        self.page.locator('#seed').fill('AbC123x')
+        self.page.locator('#fresh_seed').check()
+        expect(self.page.locator('#seed')).to_be_disabled()
+        expect(self.page.locator('#fresh-hint')).to_be_visible()
+        self.page.locator('#s1-run').click()
+        expect(self.page.locator('#s1-error')).to_contain_text('Fixture stop')
+        self.assertEqual(sent, [{'provider': 'bet9ja', 'fresh_seed': True}])
+        expect(self.page.locator('#s1-guidance')).to_contain_text('Check Saved Runs')
+        self.page.locator('#seed-typed').check()
+        expect(self.page.locator('#seed')).to_be_enabled()
+        expect(self.page.locator('#fresh_seed')).not_to_be_checked()
+        self.page.locator('#s1-run').click()
+        expect(self.page.locator('#s1-error')).to_contain_text('Fixture stop')
+        self.assertEqual(sent[-1], {'provider': 'bet9ja', 'seed': 'AbC123x'})
+
+    def test_status_failure_refreshes_read_only_and_resumes_polling(self):
+        self.load_run()
+        status_path = '/api/scan/' + self.registry.run_id
+        self.errors[status_path] = 'Status offline'
+        self.page.locator('#s1-refresh').click()
+        expect(self.page.locator('#s1-guidance')).to_contain_text('Status updates paused')
+        expect(self.page.locator('#s1-error')).to_contain_text('Status offline')
+        del self.errors[status_path]
+        self.registry.run['state'] = 'running'
+        self.page.locator('#s1-refresh').click()
+        expect(self.page.locator('#s1-state')).to_contain_text('Scanning codes')
+        expect(self.page.locator('#s1-error')).to_be_hidden()
+        expect(self.page.locator('#s1-run')).to_be_disabled()
+        self.registry.run.update(state='succeeded', stop_reason='try_budget')
+        expect(self.page.locator('#s1-state')).to_contain_text('Completed — Attempt limit reached', timeout=7000)
+        expect(self.page.locator('#s1-run')).to_be_enabled()
+        self.assertFalse(any(path == '/api/scan' for path, _ in self.requests))
+
+    def test_cancellation_pending_survives_provider_switch_without_duplicate_request(self):
+        self.load_run()
+        self.registry.run['state'] = 'running'
+        self.page.locator('#s1-refresh').click()
+        expect(self.page.locator('#s1-cancel')).to_be_enabled()
+        pending = []
+        self.page.route('**/api/scan/*/cancel', lambda route: pending.append(route))
+        self.page.locator('#s1-cancel').click()
+        expect(self.page.locator('#s1-state')).to_have_text('Cancelling scan… · seed ABC1234')
+        expect(self.page.locator('#s1-cancel')).to_be_disabled()
+        self.page.locator('#provider').select_option('sportybet')
+        self.page.locator('#provider').select_option('bet9ja')
+        expect(self.page.locator('#s1-cancel')).to_be_disabled()
+        expect(self.page.locator('#s1-run')).to_be_disabled()
+        self.assertEqual(len(pending), 1)
+        self.registry.run.update(state='cancelled_unresolved')
+        pending.pop().fulfill(json=self.registry.run)
+        expect(self.page.locator('#context-state')).to_have_text('Cancellation pending')
+        self.registry.run.update(state='cancelled')
+        expect(self.page.locator('#context-state')).to_have_text('Cancelled', timeout=7000)
+        expect(self.page.locator('#s1-run')).to_be_enabled()
+
+    def test_late_status_reply_cannot_undo_confirmed_cancellation(self):
+        for stale_error in [False, True]:
+            with self.subTest(stale_error=stale_error):
+                self.registry.run.update(state='succeeded')
+                self.open_page()
+                self.load_run()
+                self.registry.run['state'] = 'running'
+                self.page.locator('#s1-refresh').click()
+                expect(self.page.locator('#s1-cancel')).to_be_enabled()
+                pending = []
+                pattern = '**/api/scan/' + self.registry.run_id
+                self.page.route(pattern, lambda route: pending.append(route))
+                self.page.locator('#s1-refresh').click()
+                expect(self.page.locator('#s1-refresh')).to_be_disabled()
+                def cancel(route):
+                    self.registry.run['state'] = 'cancelled'
+                    route.fulfill(json=self.registry.run)
+                self.page.route('**/api/scan/*/cancel', cancel)
+                self.page.locator('#s1-cancel').click()
+                expect(self.page.locator('#context-state')).to_have_text('Cancelled')
+                if stale_error:
+                    pending.pop().fulfill(status=503, json={'error': {'message': 'Stale failure'}})
+                else:
+                    pending.pop().fulfill(json=dict(self.registry.run, state='running'))
+                expect(self.page.locator('#s1-refresh')).to_be_enabled()
+                expect(self.page.locator('#context-state')).to_have_text('Cancelled')
+                expect(self.page.locator('#s1-run')).to_be_enabled()
+                expect(self.page.locator('#s1-error')).to_be_hidden()
+                self.page.unroute(pattern)
+                self.page.unroute('**/api/scan/*/cancel')
+
+    def test_scan_status_keeps_raw_failure_in_diagnostics_and_layout_fits(self):
+        self.registry.run.update(state='failed', stop_reason='failure',
+            error={'code': 'booking_failed', 'message': 'Provider detail ' + 'x' * 300})
+        self.open_page()
+        self.navigate('runs')
+        self.choose_run(self.registry.run_id)
+        self.page.locator('#runs-load').click()
+        expect(self.page.locator('#s1-state')).to_contain_text('Failed — Stopped after an error')
+        expect(self.page.locator('#s1-diagnostic-text')).not_to_be_visible()
+        self.page.locator('#s1-diagnostics summary').click()
+        expect(self.page.locator('#s1-diagnostic-text')).to_contain_text('booking_failed')
+        expect(self.page.locator('#s2-fields')).to_be_disabled()
+        for width in [1440, 768, 390, 320]:
+            self.page.set_viewport_size({'width': width, 'height': 1000})
+            self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width)
+            for selector in ['#s1-run', '#s1-refresh', '.seed-option', '.scan-advanced summary']:
+                for box in self.page.locator(selector).all():
+                    self.assertGreaterEqual(box.bounding_box()['height'], 44)
+
     def test_stage1_leg_filter_combines_with_odds_and_limits_copy(self):
         self.load_run()
         expect(self.page.locator('#s1-cards details')).to_have_count(25)
