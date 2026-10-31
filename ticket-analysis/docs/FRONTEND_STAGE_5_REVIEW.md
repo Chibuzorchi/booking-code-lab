@@ -1,6 +1,6 @@
 # Stage 5 — scan configuration and job status
 
-Implemented 2026-10-31 on `feat/frontend-stage-5-scan`, branched from merged main `fb14d18` (PR #11). Awaiting user review; Stage 6 has not started.
+Implemented 2026-10-31 on `feat/frontend-stage-5-scan`, branched from merged main `fb14d18` (PR #11). Merged into main as PR #12; Stage 6 has not started.
 
 Plan: [Frontend audit and incremental redesign](FRONTEND_AUDIT_AND_PLAN.md#5-scan-configuration-and-job-status).
 

@@ -4,14 +4,14 @@
 
 ## Current progress — 2026-10-31
 
-Stages 1–4 are merged into main (through PR #11, `fb14d18`). Stage 5 is implemented on `feat/frontend-stage-5-scan` and awaits user review; see [Stage 5 changes and validation](FRONTEND_STAGE_5_REVIEW.md). Stages 6–10 remain pending. Stage 9's original backend-availability assumptions require reassessment against the newer results backend.
+Stages 1–5 are merged into main (stage 5 in PR #12). See [Stage 5 changes and validation](FRONTEND_STAGE_5_REVIEW.md). Stages 6–10 remain pending. Stage 9's original backend-availability assumptions require reassessment against the newer results backend.
 
 ---
 
 # Frontend audit and incremental redesign proposal
 
 Audit date: 25 October 2026. Repository: `Chibuzorchi/booking-code-lab`, local HEAD `0e63f02`.
-Status: **audit only; implementation requires explicit approval.** No application source, tests, API contracts, or saved extracts were edited. Working tree was clean at completion. Audit scripts, screenshots, and reports are in this temporary directory.
+Status: **audit only; implementation requires explicit approval.** No application source, tests, API contracts, or saved extracts were edited. Working tree was clean at completion.
 
 ## Recommendation
 
