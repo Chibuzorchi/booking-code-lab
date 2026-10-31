@@ -416,6 +416,20 @@ class ConsoleStateTests(unittest.TestCase):
         self.assertEqual(0, listed['s2_cards'])
         self.assertFalse(listed['s2_locked'])
 
+    def test_stage2_list_can_be_banded_by_number_of_legs(self):
+        seen = self.seen['legs_view']
+        self.assertEqual(['LOW111', 'MID222', 'NOPRICE'], seen['at_most_5']['shown'])
+        self.assertIn('Showing 3 of 4 with up to 5 legs', seen['at_most_5']['note'])
+        self.assertEqual(seen['at_most_5']['shown'], seen['at_most_5']['copied'].split('\n'))
+        self.assertEqual(['MID222', 'NOPRICE'], seen['four_to_five']['shown'])
+        self.assertIn('4 to 5 legs', seen['four_to_five']['note'])
+        self.assertEqual(['MID222'], seen['with_odds']['shown'])
+        self.assertIn('odds from 100 up and 4 to 5 legs', seen['with_odds']['note'])
+        self.assertEqual([], seen['inverted']['shown'])
+        self.assertIn('"Min legs" is above "Max legs"', seen['inverted']['note'])
+        self.assertEqual(4, len(seen['reset']['shown']))
+        self.assertEqual(('', ''), (seen['reset']['min'], seen['reset']['max']))
+
     def test_all_codes_list_has_its_own_order_and_band(self):
         seen = self.seen['all_codes']
         self.assertEqual(['HIGH33', 'MID222', 'TWIN55', 'TWIN44', 'LOW111', 'NOPRICE'], seen['highest']['shown'])

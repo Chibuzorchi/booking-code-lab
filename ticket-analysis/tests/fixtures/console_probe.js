@@ -160,11 +160,17 @@ async function pick(world, run_id, state, provider) {
   const latest = world.pending.map(c => c.url).lastIndexOf('/api/runs?provider=' + world.el('provider').value);
   answer(world.pending.splice(latest, 1)[0], {runs: [runStatus(run_id, state, provider)]});
   await settle();
-  world.el('runs').value = run_id;
+  chooseRun(world, run_id);
   press(world, 'runs-load');
   await settle();
   answer(take(world, `/api/scan/${run_id}`), runStatus(run_id, state, provider));
   await settle();
+}
+
+function chooseRun(world, run_id) {
+  const radio = world.el('runs-rows').querySelectorAll('input').find(el => el.value === run_id);
+  if (!radio) throw new Error('Missing run choice ' + run_id);
+  radio.checked = true; radio.fire('change');
 }
 
 const OWNER = {'s1-run': 's1-fields', 's1-cancel': 's1-fields', 's2-run': 's2-fields',
@@ -347,10 +353,10 @@ Object.assign(scenarios, {
     await pick(w, 'RUN_A', 'succeeded');
     await switchTo(w, 'sportybet');
     const locked = w.el('runs').disabled && w.el('runs-load').disabled;
-    const cleared = w.el('runs').value === '' && !w.el('runs').childNodes.some(x => x.value === 'RUN_A');
+    const cleared = !w.el('runs-rows').querySelectorAll('input').some(x => x.value === 'RUN_A');
     answer(take(w, '/api/runs'), {runs: [runStatus('RUN_B', 'succeeded', 'sportybet')]});
     await settle();
-    w.el('runs').value = 'RUN_B';
+    chooseRun(w, 'RUN_B');
     press(w, 'runs-load'); await settle();
     answer(take(w, '/api/scan/RUN_B'), runStatus('RUN_A', 'succeeded', 'bet9ja'));
     await settle();
@@ -427,6 +433,35 @@ Object.assign(scenarios, {
     const unticked = {seed_disabled: world.el('seed').disabled,
                       hint: world.el('seed-hint').textContent};
     return {body: post.body, before, ticked, unticked, while_booking, booked, finished};
+  },
+
+  /* The legs band narrows the list by number of games, alongside the odds band. */
+  async legs_view() {
+    const world = await start();
+    await pick(world, 'RUN_A', 'succeeded');
+    press(world, 's2-run');
+    await settle();
+    const report = bandedReport('RUN_A');
+    answer(take(world, '/api/distinct'), {...report, distinct: [
+      ticket('LOW111', 9, 3), ticket('MID222', 400, 5), ticket('HIGH33', 9000, 8), ticket('NOPRICE', null, 4)]});
+    await settle();
+    const set = (id, value) => { world.el(id).value = value; world.el(id).fire('input'); };
+    const copy = () => { world.copied.length = 0; world.el('s2-copy-all').fire('click');
+                         return world.copied[0]; };
+    set('s2-max-legs', '5');
+    const at_most_5 = {shown: shownCodes(world), note: world.el('s2-count').textContent, copied: copy()};
+    set('s2-min-legs', '4');
+    const four_to_five = {shown: shownCodes(world), note: world.el('s2-count').textContent};
+    set('s2-min', '100');
+    const with_odds = {shown: shownCodes(world), note: world.el('s2-count').textContent};
+    set('s2-min', '');
+    set('s2-min-legs', '6');
+    set('s2-max-legs', '5');
+    const inverted = {shown: shownCodes(world), note: world.el('s2-count').textContent};
+    world.el('s2-view-reset').fire('click');
+    const reset = {shown: shownCodes(world), min: world.el('s2-min-legs').value,
+                   max: world.el('s2-max-legs').value};
+    return {at_most_5, four_to_five, with_odds, inverted, reset};
   },
 
   /* F9: stage 2's order/band controls are a view, not another analysis. */

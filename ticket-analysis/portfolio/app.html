@@ -47,6 +47,8 @@
         <label class="check"><span class="row"><input id="fresh_seed" type="checkbox">Book a fresh code</span><span>The run opens the provider in a browser, books one coupon, and scans from that code.</span></label>
         <label>Min odds<span>blank = no floor</span><input id="min_odds" type="number" min="0" step="any"></label>
         <label>Max odds<span>blank = 350,000</span><input id="max_odds" type="number" min="0" step="any"></label>
+        <label>Min legs<span>blank = no floor</span><input id="min_legs" type="number" min="0" step="1"></label>
+        <label>Max legs<span>blank = no ceiling</span><input id="max_legs" type="number" min="0" step="1"></label>
         <label>How many codes<span>blank/0 = uncapped</span><input id="want_count" type="number" min="0" step="1"></label>
         <button class="go" id="s1-run" type="submit">Run scan</button>
         <button id="s1-cancel" type="button" disabled>Cancel</button>
@@ -68,6 +70,8 @@
         <label>Order<span>unpriced codes sit last either way</span><select id="s1-order"><option value="asc">Lowest odds first</option><option value="desc">Highest odds first</option></select></label>
         <label>From odds<span>blank = no floor</span><input id="s1-min" type="number" min="0" step="any"></label>
         <label>To odds<span>blank = no ceiling</span><input id="s1-max" type="number" min="0" step="any"></label>
+        <label>Min legs<span>games in a code</span><input id="s1-min-legs" type="number" min="1" step="1"></label>
+        <label>Max legs<span>games in a code</span><input id="s1-max-legs" type="number" min="1" step="1"></label>
         <button id="s1-view-reset" type="button">Show all</button>
       </div>
     </fieldset>
@@ -78,15 +82,27 @@
 </section>
 
 <section class="panel" id="saved-runs" aria-labelledby="runs-heading" hidden>
-  <h2 id="runs-heading">Earlier runs on this machine</h2>
+  <h2 id="runs-heading">Choose a saved run</h2>
+  <p class="notice">Select a run to view its codes or continue analysis. Only completed runs with a committed extract can feed Distinct Codes and De-correlate.</p>
   <div id="s1-history">
     <div class="grid">
-      <label>Run<select id="runs"><option value="">— none loaded —</option></select></label>
+      <label class="run-search">Search runs<input id="runs-search" type="search" placeholder="Seed, date or run ID" autocomplete="off"></label>
+      <label>Status<select id="runs-status"><option value="">All statuses</option><option value="succeeded">Completed</option><option value="active">In progress</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option><option value="unknown">Completion unknown</option></select></label>
       <button id="runs-refresh" type="button">Refresh list</button>
-      <button id="runs-load" type="button">Use this run</button>
-      <button id="runs-check-results" type="button">Check selected run’s results</button>
+      <button id="runs-reset" type="button">Clear filters</button>
     </div>
-    <p class="notice" id="runs-note">Only a run that committed an extract can feed stages 2 and 3.</p>
+    <p class="notice" id="runs-note" role="status"></p>
+    <fieldset id="runs" disabled><legend class="sr-only">Choose one saved run</legend>
+      <div class="scroll runs-table" tabindex="0" role="region" aria-label="Saved runs table">
+        <table><caption class="sr-only">Runs for the selected provider, newest first</caption><thead><tr><th scope="col">Choose</th><th scope="col">Started</th><th scope="col">Provider / seed</th><th scope="col">Status</th><th scope="col">Saved codes</th><th scope="col">Details</th></tr></thead><tbody id="runs-rows"></tbody></table>
+      </div>
+    </fieldset>
+    <div class="bar" id="runs-pager" hidden><button id="runs-prev" type="button">Previous</button><p id="runs-page"></p><button id="runs-next" type="button">Next</button></div>
+    <div class="run-choice"><p id="runs-choice">Select a run from the table.</p><div class="ticket-actions">
+      <button class="go" id="runs-load" type="button" disabled>Use this run</button>
+      <button id="runs-check-results" type="button" disabled>Check selected run’s results</button>
+    </div></div>
+    <p class="notice">Unknown saved counts are shown as “—”. Live scan counters do not confirm how many codes were saved.</p>
   </div>
 </section>
 
@@ -131,6 +147,8 @@
       <label>Order<span>unpriced codes sit last either way</span><select id="s2-order"><option value="asc">Lowest odds first</option><option value="desc">Highest odds first</option></select></label>
       <label>From odds<span>blank = no floor</span><input id="s2-min" type="number" min="0" step="any"></label>
       <label>To odds<span>blank = no ceiling</span><input id="s2-max" type="number" min="0" step="any"></label>
+      <label>Min legs<span>games in a code</span><input id="s2-min-legs" type="number" min="1" step="1"></label>
+      <label>Max legs<span>games in a code</span><input id="s2-max-legs" type="number" min="1" step="1"></label>
       <button id="s2-view-reset" type="button">Show all</button>
     </div>
   </fieldset>

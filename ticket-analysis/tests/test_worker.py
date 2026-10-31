@@ -672,6 +672,17 @@ class FreshSeedArgvTests(WorkerTestBase):
         self.assertEqual(argv[3:], typed[4:])
         self.assertEqual(typed[:4], [sys.executable, "-m", "scripts.scan_code", "SEED"])
 
+    def test_legs_range_becomes_scanner_flags_and_zero_means_unset(self):
+        run_dir = self.workspace / "run"
+        for fresh in (False, True):
+            argv = scan_argv(sys.executable, None if fresh else "SEED", run_dir, max_qualifying=0,
+                             min_legs=3, max_legs=5, fresh_seed=fresh)
+            self.assertEqual("3", argv[argv.index("--min-legs") + 1])
+            self.assertEqual("5", argv[argv.index("--max-legs") + 1])
+        argv = scan_argv(sys.executable, "SEED", run_dir, max_qualifying=0, min_legs=0, max_legs=None)
+        self.assertNotIn("--min-legs", argv)
+        self.assertNotIn("--max-legs", argv)
+
     def test_provider_without_book_and_scan_is_rejected(self):
         host = self.host()
         # The fixture workspace has scan_code.py only.

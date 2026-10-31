@@ -75,7 +75,7 @@ a{color:#184b3e;text-underline-offset:3px}
 .context-label{font-size:12px;color:#5c6c64}.run-context strong{grid-column:1;overflow-wrap:anywhere;font-size:15px}
 #context-state{grid-column:1;color:#5c6c64}#change-run{grid-column:2;grid-row:1/4;align-self:center;padding:10px 0;min-height:44px}
 #context-details{grid-column:1/-1;color:#5c6c64}#context-details summary{cursor:pointer;padding:4px 0}#context-id{display:block;overflow-wrap:anywhere;padding-top:6px}
-#saved-runs .grid label{min-width:0;max-width:100%;flex:1 1 100%}#runs{max-width:100%;width:100%}
+#saved-runs .grid label{min-width:0;max-width:100%}.run-search{flex:1;min-width:200px!important}
 #page-title:focus{outline:none}.skip-link{position:fixed;top:8px;left:8px;transform:translateY(-200%);z-index:2;padding:12px;background:#fff;border:2px solid #184b3e}.skip-link:focus{transform:none}
 @media(max-width:850px){
  .app-layout{display:block}.app-sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid #d0dcd3;padding:18px}
@@ -84,3 +84,11 @@ a{color:#184b3e;text-underline-offset:3px}
  .run-context{min-width:0;width:100%;max-width:none}main{padding:20px 16px 48px}
 }
 @media(max-width:400px){.workspace-controls{align-items:stretch}.workspace-controls label{flex:1}.run-context{column-gap:10px}}
+
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+#runs{min-width:0}.runs-table{margin-top:16px}.runs-table table{min-width:740px;width:100%}.runs-table td{vertical-align:top}
+.runs-table input[type=radio]{min-width:0;width:22px;height:22px;min-height:0;accent-color:#1c5344}
+.runs-table small,.current-label{display:block;margin-top:5px;color:#5c6c64}.current-label{font-weight:600;color:#184b3e}
+.runs-table details{max-width:220px}.runs-table code{display:block;overflow-wrap:anywhere;margin-top:10px}.runs-table summary{cursor:pointer}
+.current-run{background:#edf5ef}.run-choice{margin-top:20px;padding-top:16px;border-top:1px solid #dce4dc}
+.run-choice p{margin:0 0 12px}.runs-table:focus-visible{outline:3px solid #bb690c;outline-offset:3px}

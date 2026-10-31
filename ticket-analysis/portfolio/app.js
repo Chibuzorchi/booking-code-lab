@@ -34,6 +34,8 @@ const STATE_NAMES = {starting: 'Starting', running: 'Running', succeeded: 'Compl
   cancelled_unresolved: 'Cancellation pending', unknown: 'Completion unknown'};
 let section = 'scan', routeToken = 0, pendingRun = null, handledHash = null;
 const sectionScroll = Object.create(null);
+let runHistory = [], historyLoading = true, historyProvider = null, selectedHistory = '', historyPage = 0;
+let runReturn = 'scan', runLoading = null;
 
 function routeHash(target = section) {
   const query = new URLSearchParams({provider});
@@ -66,6 +68,7 @@ function renderContext() {
   $('change-run').textContent = run ? 'Change run' : 'Choose a run';
   $('change-run').setAttribute('href', routeHash('runs'));
   for (const key of Object.keys(SECTIONS)) $('nav-' + key).setAttribute('href', routeHash(key));
+  runControls();
 }
 
 function setNavigation(open) {
@@ -160,7 +163,7 @@ async function restoreRoute() {
     if (token === routeToken) {
       pendingRun = null;
       $('s1-run').disabled = Boolean(view.submission || (view.run && ACTIVE.has(view.run.state)));
-      $('runs-load').disabled = $('runs').disabled || Boolean(view.submission);
+      runControls();
       syncRoute();
     }
   }
@@ -169,9 +172,12 @@ async function restoreRoute() {
 function initializeShell() {
   for (const key of Object.keys(SECTIONS)) $('nav-' + key).addEventListener('click', event => {
     if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-    event.preventDefault(); navigateSection(key);
+    event.preventDefault(); if (key === 'runs') runReturn = 'scan'; navigateSection(key);
   });
-  $('change-run').addEventListener('click', event => { event.preventDefault(); navigateSection('runs'); });
+  $('change-run').addEventListener('click', event => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault(); runReturn = section === 'runs' ? 'scan' : section; navigateSection('runs');
+  });
   $('skip-workspace').addEventListener('click', event => { event.preventDefault(); $('page-title').focus(); });
   $('nav-toggle').addEventListener('click', () => setNavigation($('app-sidebar').hidden));
   setNavigation(!window.matchMedia('(max-width:850px)').matches);
@@ -185,6 +191,7 @@ function initializeShell() {
    left, so it drops itself instead of painting over the current one. */
 function invalidate() {
   gen += 1;
+  runLoading = null;
   stopPolling();
   analysisRequest.s1 = analysisRequest.s2 = analysisRequest.s3 = null;
   $('s2-run').disabled = $('s3-run').disabled = false;
@@ -302,7 +309,7 @@ function seedHint() {
    whole and the incoming one is repainted from its own remembered reports. */
 /* How stage 2's list is being looked at. Kept with the rest of the provider's
    view, so switching away and back shows the same list, not a reset one. */
-function blankPrefs() { return {order: 'asc', min: null, max: null}; }
+function blankPrefs() { return {order: 'asc', min: null, max: null, minLegs: null, maxLegs: null}; }
 function blankView() { return {run: null, codes: null, codesAsked: null, stage2: null, stage3: null, submission: null, showExpired: false,
                                error: null, prefs: blankPrefs(), codesPrefs: blankPrefs(), codesPage: 0, page: 0}; }
 
@@ -369,7 +376,7 @@ function restore() {
     lock('s2', true, 'Waiting for scan submission.');
   }
   if (view.error) fail('s1-error', view.error);
-  $('runs-load').disabled = $('runs').disabled || Boolean(view.submission) || Boolean(pendingRun);
+  runControls();
   renderContext();
 }
 
@@ -490,6 +497,8 @@ async function startScan(event) {
     for (const [key, value] of Object.entries({
       min_odds: optionalNumber('min_odds', 'Min odds'),
       max_odds: optionalNumber('max_odds', 'Max odds'),
+      min_legs: optionalInteger('min_legs', 'Min legs', 0),
+      max_legs: optionalInteger('max_legs', 'Max legs', 0),
       want_count: optionalInteger('want_count', 'How many codes', 0),
       try_budget: optionalInteger('try_budget', 'Try budget', 1),
     })) if (value !== undefined) body[key] = value;
@@ -545,52 +554,109 @@ async function cancelScan() {
   }
 }
 
+function runDate(status) {
+  return status.started_at && Number.isFinite(Date.parse(status.started_at))
+    ? new Date(status.started_at).toLocaleString(undefined, {year:'numeric', month:'short', day:'numeric',
+        hour:'2-digit', minute:'2-digit', timeZoneName:'short'}) : 'Date unavailable';
+}
+function historyMatches(status) {
+  const query = $('runs-search').value.trim().toLocaleLowerCase(), filter = $('runs-status').value;
+  const matchesState = !filter || (filter === 'active' ? ACTIVE.has(status.state)
+    : filter === 'failed' ? ['failed', 'launch_failed'].includes(status.state) : status.state === filter);
+  return matchesState && [status.run_id, status.seed, runDate(status), status.started_at,
+    PROVIDER_NAMES[status.provider], STATE_NAMES[status.state]].join(' ').toLocaleLowerCase().includes(query);
+}
+function runControls() {
+  const selected = runHistory.find(run => run.run_id === selectedHistory);
+  const blocked = historyLoading || Boolean(view.submission || pendingRun || runLoading);
+  $('runs').disabled = blocked;
+  $('runs-load').disabled = blocked || !selected;
+  $('runs-check-results').disabled = blocked || !selected || Boolean(view.results && view.results.job);
+  $('runs-choice').textContent = runLoading ? 'Loading selected run…' : selected
+    ? `Chosen: ${runDate(selected)} · ${PROVIDER_NAMES[selected.provider]} · Seed ${seedText(selected)}`
+    : 'Select a run from the table.';
+  for (const row of $('runs-rows').querySelectorAll('tr')) {
+    const current = Boolean(view.run && view.run.run_id === row.dataset.run);
+    row.className = current ? 'current-run' : '';
+    for (const marker of row.querySelectorAll('span')) if (marker.dataset.current) marker.hidden = !current;
+  }
+}
+function renderRuns() {
+  const rows = runHistory.filter(historyMatches);
+  const page = paginate(rows, historyPage); historyPage = page.page;
+  const body = $('runs-rows'); body.replaceChildren();
+  for (const status of page.pageRows) {
+    const row = node('tr'); row.dataset.run = status.run_id;
+    const choice = node('input'); choice.type = 'radio'; choice.name = 'saved-run'; choice.value = status.run_id;
+    choice.checked = selectedHistory === status.run_id;
+    choice.setAttribute('aria-label', `Choose ${PROVIDER_NAMES[status.provider]} run ${runDate(status)}, seed ${seedText(status)}, ${STATE_NAMES[status.state] || status.state}`);
+    choice.addEventListener('change', () => { selectedHistory = status.run_id; runControls(); });
+    const choose = node('td'); choose.append(choice);
+    const started = node('td', runDate(status));
+    const identity = node('td'); identity.append(node('b', seedText(status)), node('small', PROVIDER_NAMES[status.provider]));
+    const state = node('td', STATE_NAMES[status.state] || status.state);
+    const marker = node('span', 'Current run', 'current-label'); marker.dataset.current = 'true'; state.append(marker);
+    const count = status.state === 'succeeded' && status.extract && Number.isInteger((status.counters || {}).qualifying)
+      ? status.counters.qualifying : null;
+    const total = node('td', count == null ? '—' : num(count));
+    const detail = node('td'), disclosure = node('details');
+    disclosure.append(node('summary', 'Details'), node('code', status.run_id));
+    if (status.stop_reason) disclosure.append(node('p', 'Stop reason: ' + status.stop_reason));
+    if (status.error) disclosure.append(node('p', status.error.message || String(status.error)));
+    detail.append(disclosure); row.append(choose, started, identity, state, total, detail); body.append(row);
+  }
+  $('runs-note').textContent = historyLoading ? 'Loading saved runs…' : !runHistory.length
+    ? `No saved runs for ${PROVIDER_NAMES[provider]}. Start a scan to create one.`
+    : !rows.length ? 'No runs match these filters. Clear filters to see all runs.'
+    : `${rows.length} of ${runHistory.length} runs · newest first`;
+  $('runs-pager').hidden = rows.length <= PAGE_SIZE;
+  $('runs-page').textContent = `Page ${page.page + 1} of ${page.totalPages}`;
+  $('runs-prev').disabled = page.page === 0;
+  $('runs-next').disabled = page.page + 1 >= page.totalPages;
+  runControls();
+}
 async function refreshRuns() {
   fail('s1-error', view.error || '');
   const request = ++historyRequest, which = provider;
-  const select = $('runs');
-  select.replaceChildren(node('option', '— loading runs —'));
-  select.firstChild.value = '';
-  select.value = '';
-  select.disabled = true;
-  $('runs-load').disabled = true;
+  if (historyProvider !== which) { $('runs-search').value = ''; $('runs-status').value = ''; }
+  historyProvider = which; runHistory = []; selectedHistory = ''; historyPage = 0; historyLoading = true;
+  renderRuns();
   try {
     const history = await api('GET', '/api/runs?provider=' + encodeURIComponent(which));
     if (request !== historyRequest || which !== provider) return;
-    select.replaceChildren(node('option', history.runs.length ? '— pick a run —' : '— no runs yet —'));
-    select.firstChild.value = '';
-    for (const status of history.runs.filter(status => status.provider === which)) {
-      const option = node('option', `${status.run_id} · ${status.state} · seed ${seedText(status)}`);
-      option.value = status.run_id;
-      select.append(option);
-    }
-    select.disabled = false;
-    $('runs-load').disabled = Boolean(view.submission) || Boolean(pendingRun);
-    $('runs-note').textContent = `${history.runs.length} run(s) recorded for ${which}.`
-      + ' Only a run that committed an extract can feed stages 2 and 3.';
+    runHistory = history.runs.filter(status => status.provider === which)
+      .sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || '')));
+    selectedHistory = view.run && runHistory.some(run => run.run_id === view.run.run_id) ? view.run.run_id : '';
+    historyLoading = false; renderRuns();
   } catch (e) {
-    if (request === historyRequest && which === provider) fail('s1-error', e.message);
+    if (request !== historyRequest || which !== provider) return;
+    historyLoading = false; renderRuns();
+    $('runs-note').textContent = 'Saved runs could not be loaded. Use Refresh list to retry.';
+    fail('s1-error', e.message);
   }
 }
-
 async function loadRun() {
-  if ($('runs').disabled || view.submission || pendingRun) return;
-  const run_id = $('runs').value;
-  if (!run_id) return;
+  if ($('runs').disabled || view.submission || pendingRun || runLoading) return;
+  const run_id = selectedHistory;
+  if (!runHistory.some(run => run.run_id === run_id)) return;
   fail('s1-error', '');
-  invalidate();                   // this selection supersedes anything still in flight
-  const mine = gen;
+  invalidate();
+  const mine = gen, token = {}; runLoading = token; runControls();
   try {
     const status = await api('GET', '/api/scan/' + encodeURIComponent(run_id));
     if (mine !== gen) return;
     if (status.provider !== provider) throw new Error('Run belongs to another provider. Refresh the history list.');
-    showRun(status);              // clears both stages, since the run id changed
+    if (status.run_id !== run_id) throw new Error('Run identity does not match the selection. Refresh the history list.');
+    showRun(status);
     loadCodes();
     if (ACTIVE.has(status.state)) startPolling();
     return true;
   } catch (e) {
     if (mine !== gen) return;
     fail('s1-error', e.message);
+    if (view.run && ACTIVE.has(view.run.state)) startPolling();
+  } finally {
+    if (runLoading === token) { runLoading = null; runControls(); }
   }
 }
 
@@ -712,7 +778,7 @@ function resultsControls() {
   $('results-cancel').disabled = !busy;
   $('results-partial').disabled = busy;
   $('s1-check-results').disabled = !run || busy || !view.codes || !view.codes.saved_count;
-  $('runs-check-results').disabled = Boolean(view.submission) || busy;
+  runControls();
   for (const button of $('s1-cards').querySelectorAll('button[data-result-action]')) button.disabled = busy;
   for (const button of $('results-cards').querySelectorAll('button')) button.disabled = busy;
 }
@@ -891,10 +957,10 @@ async function checkSavedCode(rowId = null, expectedRun = null) {
 }
 $('s1-check-results').addEventListener('click', () => checkSavedCode());
 $('runs-check-results').addEventListener('click', async () => {
-  const selected = $('runs').value, which = provider;
+  const selected = selectedHistory, which = provider;
   if (!selected || $('runs').disabled || view.submission) return;
-  await loadRun();
-  if (provider === which && view.run && view.run.run_id === selected) await checkSavedCode(null, selected);
+  const loaded = await loadRun();
+  if (loaded && provider === which && view.run && view.run.run_id === selected) await checkSavedCode(null, selected);
 });
 $('results-show-all').addEventListener('click', () => {
   if (!view.results) return;
@@ -1018,23 +1084,33 @@ function readPrefs(stage) {
     return Number.isFinite(value) && value >= 0 ? value : null;
   };
   return {order: $(stage + '-order').value === 'desc' ? 'desc' : 'asc',
-          min: bound(stage + '-min'), max: bound(stage + '-max')};
+          min: bound(stage + '-min'), max: bound(stage + '-max'),
+          minLegs: bound(stage + '-min-legs'), maxLegs: bound(stage + '-max-legs')};
 }
 
 function writePrefs(stage, prefs) {
   $(stage + '-order').value = prefs.order === 'desc' ? 'desc' : 'asc';
   $(stage + '-min').value = prefs.min == null ? '' : String(prefs.min);
   $(stage + '-max').value = prefs.max == null ? '' : String(prefs.max);
+  $(stage + '-min-legs').value = prefs.minLegs == null ? '' : String(prefs.minLegs);
+  $(stage + '-max-legs').value = prefs.maxLegs == null ? '' : String(prefs.maxLegs);
 }
 
 function arrange(tickets, basis, prefs) {
   const rows = tickets.map((ticket, index) => [ticket, index, oddsOf(ticket, basis)]);
-  const banded = prefs.min == null && prefs.max == null ? rows.slice()
-    // A banded list can only contain codes whose odds are known, so unpriced
-    // ones drop out here; the count line says how many did.
-    : rows.filter(([, , odds]) => odds != null
-        && (prefs.min == null || odds >= prefs.min)
-        && (prefs.max == null || odds <= prefs.max));
+  const oddsBanded = prefs.min != null || prefs.max != null;
+  const legsBanded = prefs.minLegs != null || prefs.maxLegs != null;
+  // A banded list can only contain codes whose odds are known, so unpriced
+  // ones drop out here; the count line says how many did. Likewise a code
+  // with no known leg count cannot match a legs band.
+  const banded = !oddsBanded && !legsBanded ? rows.slice()
+    : rows.filter(([ticket, , odds]) =>
+        (!oddsBanded || (odds != null
+          && (prefs.min == null || odds >= prefs.min)
+          && (prefs.max == null || odds <= prefs.max)))
+        && (!legsBanded || (Number.isFinite(ticket.num_legs)
+          && (prefs.minLegs == null || ticket.num_legs >= prefs.minLegs)
+          && (prefs.maxLegs == null || ticket.num_legs <= prefs.maxLegs))));
   const sign = prefs.order === 'desc' ? -1 : 1;
   banded.sort((a, b) => {
     if (a[2] === b[2]) return a[1] - b[1];       // stable within equal odds
@@ -1042,9 +1118,8 @@ function arrange(tickets, basis, prefs) {
     if (b[2] == null) return -1;
     return sign * (a[2] - b[2]);
   });
-  const banding = prefs.min != null || prefs.max != null;
-  return {rows: banded, banding,
-          droppedUnpriced: banding ? rows.filter(row => row[2] == null).length : 0};
+  return {rows: banded, banding: oddsBanded || legsBanded, oddsBanded, legsBanded,
+          droppedUnpriced: oddsBanded ? rows.filter(row => row[2] == null).length : 0};
 }
 
 /* What the order/band controls are doing to a list of `total` codes. */
@@ -1053,9 +1128,14 @@ function viewNote(total, prefs, shown) {
   if (!shown.banding) return [`Listed ${order}.`];
   if (prefs.min != null && prefs.max != null && prefs.min > prefs.max)
     return [`"From odds" is above "To odds", so nothing matches.`];
-  const band = prefs.min == null ? `up to ${num(prefs.max)}`
-    : prefs.max == null ? `from ${num(prefs.min)} up` : `${num(prefs.min)} to ${num(prefs.max)}`;
-  const parts = [`Showing ${shown.rows.length} of ${total} with odds ${band}, ${order}.`];
+  if (prefs.minLegs != null && prefs.maxLegs != null && prefs.minLegs > prefs.maxLegs)
+    return [`"Min legs" is above "Max legs", so nothing matches.`];
+  const range = (lo, hi) => lo == null ? `up to ${num(hi)}`
+    : hi == null ? `from ${num(lo)} up` : `${num(lo)} to ${num(hi)}`;
+  const bands = [];
+  if (shown.oddsBanded) bands.push(`odds ${range(prefs.min, prefs.max)}`);
+  if (shown.legsBanded) bands.push(`${range(prefs.minLegs, prefs.maxLegs)} legs`);
+  const parts = [`Showing ${shown.rows.length} of ${total} with ${bands.join(' and ')}, ${order}.`];
   if (shown.droppedUnpriced)
     parts.push(`${shown.droppedUnpriced} unpriced code(s) cannot match a band and are hidden.`);
   return parts;
@@ -1262,9 +1342,12 @@ $('s1-cancel').addEventListener('click', cancelScan);
 $('provider').addEventListener('change', switchProvider);
 $('fresh_seed').addEventListener('change', seedHint);
 $('runs-refresh').addEventListener('click', refreshRuns);
+for (const [id, event] of [['runs-search', 'input'], ['runs-status', 'change']]) $(id).addEventListener(event, () => { historyPage = 0; renderRuns(); });
+$('runs-reset').addEventListener('click', () => { $('runs-search').value = ''; $('runs-status').value = ''; historyPage = 0; renderRuns(); $('runs-search').focus(); });
+for (const [id, change] of [['runs-prev', -1], ['runs-next', 1]]) $(id).addEventListener('click', () => { historyPage += change; renderRuns(); });
 $('runs-load').addEventListener('click', async () => {
   if (await loadRun()) {
-    if (section === 'runs') navigateSection('scan');
+    if (section === 'runs') navigateSection(runReturn);
     else syncRoute(true);
   }
 });
@@ -1277,7 +1360,7 @@ function relist() {
   view.page = 0;
   if (view.stage2) renderDistinct(view.stage2);
 }
-for (const id of ['s2-order', 's2-min', 's2-max']) $(id).addEventListener('input', relist);
+for (const id of ['s2-order', 's2-min', 's2-max', 's2-min-legs', 's2-max-legs']) $(id).addEventListener('input', relist);
 $('s2-view-reset').addEventListener('click', () => {
   view.prefs = blankPrefs();
   writePrefs('s2', view.prefs);
@@ -1294,7 +1377,7 @@ $('s1-expired').addEventListener('click', () => {
   view.codesPage = 0;
   if (view.codes) renderCodes(view.codes);
 });
-for (const id of ['s1-order', 's1-min', 's1-max']) $(id).addEventListener('input', relistCodes);
+for (const id of ['s1-order', 's1-min', 's1-max', 's1-min-legs', 's1-max-legs']) $(id).addEventListener('input', relistCodes);
 $('s1-view-reset').addEventListener('click', () => {
   view.codesPrefs = blankPrefs();
   writePrefs('s1', view.codesPrefs);

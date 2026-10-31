@@ -95,10 +95,13 @@ class BrowserControlTests(unittest.TestCase):
 
     def load_run(self):
         self.navigate('runs')
-        self.page.locator('#runs').select_option(self.registry.run_id)
+        self.choose_run(self.registry.run_id)
         self.page.locator('#runs-load').click()
         expect(self.page.locator('#s2-fields')).to_be_enabled()
         expect(self.page.locator('#page-title')).to_have_text('Scan Codes')
+
+    def choose_run(self, run_id):
+        self.page.locator(f'input[name="saved-run"][value="{run_id}"]').check()
 
     def navigate(self, section):
         if not self.page.locator('#app-sidebar').is_visible():
@@ -298,7 +301,7 @@ class BrowserControlTests(unittest.TestCase):
         self.load_run()
         self.analyze()
         self.navigate('runs')
-        self.page.locator('#runs').select_option(second_id)
+        self.choose_run(second_id)
         self.page.locator('#runs-load').click()
         expect(self.page.locator('#context-run')).to_contain_text('XYZ1234')
         expect(self.page.locator('#s3-fields')).to_be_disabled()
@@ -444,6 +447,79 @@ class BrowserControlTests(unittest.TestCase):
         expect(self.page.locator('#results-cancel')).to_be_disabled()
         posts = [(path, body) for method, path, _, body in result_requests if method == 'POST']
         self.assertEqual(posts, [('/api/results/' + run_id, {'refresh': False, 'allow_partial': False})])
+
+    def test_run_table_search_status_counts_and_paging_are_local(self):
+        for i in range(30):
+            run_id = f'run-bet9ja-20261024-051623-{i:08x}'
+            self.registry.runs[run_id] = dict(self.registry.run, run_id=run_id,
+                started_at=f'2026-10-24T05:{i:02}:00Z', seed=f'SEED{i:03}',
+                state='succeeded' if i % 2 else 'cancelled', extract={'sha256': 'fixture'},
+                counters={'qualifying': 900 + i})
+        self.open_page()
+        self.navigate('runs')
+        expect(self.page.locator('#runs-rows tr')).to_have_count(25)
+        expect(self.page.locator('#runs-load')).to_be_disabled()
+        before = list(self.requests)
+        self.page.locator('#runs-next').click()
+        expect(self.page.locator('#runs-rows tr')).to_have_count(6)
+        self.page.locator('#runs-status').select_option('cancelled')
+        expect(self.page.locator('#runs-rows tr')).to_have_count(15)
+        # Partial scan counters never masquerade as saved totals.
+        self.assertTrue(all(row == '—' for row in self.page.locator('#runs-rows td:nth-child(5)').all_text_contents()))
+        self.page.locator('#runs-status').select_option('succeeded')
+        self.page.locator('#runs-search').fill('SEED029')
+        expect(self.page.locator('#runs-rows tr')).to_have_count(1)
+        expect(self.page.locator('#runs-rows td:nth-child(5)')).to_have_text('929')
+        self.page.locator('#runs-search').fill('no matches')
+        expect(self.page.locator('#runs-note')).to_contain_text('No runs match')
+        self.page.locator('#runs-reset').click()
+        expect(self.page.locator('#runs-search')).to_be_focused()
+        expect(self.page.locator('#runs-rows tr')).to_have_count(25)
+        self.assertEqual(self.requests, before)
+        self.page.set_viewport_size({'width': 320, 'height': 900})
+        self.assertLessEqual(self.page.evaluate('document.documentElement.scrollWidth'), 320)
+
+    def test_change_run_returns_to_requesting_workflow_with_keyboard_selection(self):
+        self.navigate('distinct')
+        self.page.locator('#change-run').click()
+        radio = self.page.locator('input[name=saved-run]').first
+        radio.focus()
+        self.page.keyboard.press('Space')
+        expect(self.page.locator('#runs-load')).to_be_enabled()
+        self.page.locator('#runs-load').click()
+        expect(self.page.locator('#page-title')).to_have_text('Distinct Codes')
+        expect(self.page.locator('#s2-fields')).to_be_enabled()
+        self.navigate('runs')
+        expect(self.page.locator('#runs-rows .current-label')).to_be_visible()
+        self.page.locator('#runs-rows summary').click()
+        expect(self.page.locator('#runs-rows code')).to_have_text(self.registry.run_id)
+
+    def test_run_load_failure_cannot_start_results_for_previous_selection(self):
+        self.load_run()
+        self.navigate('runs')
+        self.errors['/api/scan/' + self.registry.run_id] = 'Run unavailable'
+        self.requests.clear()
+        self.page.locator('#runs-check-results').click()
+        expect(self.page.locator('#s1-error')).to_have_text('Run unavailable')
+        expect(self.page.locator('#page-title')).to_have_text('Saved Runs')
+        expect(self.page.locator('#runs-check-results')).to_be_enabled()
+        self.assertFalse(any(path.startswith('/api/results') for path, _ in self.requests))
+
+    def test_empty_history_and_refresh_failure_have_recovery_states(self):
+        self.registry.runs.clear()
+        self.open_page()
+        self.navigate('runs')
+        expect(self.page.locator('#runs-note')).to_contain_text('No saved runs')
+        expect(self.page.locator('#runs-load')).to_be_disabled()
+        expect(self.page.locator('#runs-check-results')).to_be_disabled()
+        self.errors['/api/runs'] = 'History unavailable'
+        self.page.locator('#runs-refresh').click()
+        expect(self.page.locator('#runs-note')).to_contain_text('Refresh list to retry')
+        del self.errors['/api/runs']
+        self.registry.runs[self.registry.run_id] = self.registry.run
+        self.page.locator('#runs-refresh').click()
+        expect(self.page.locator('#runs-rows tr')).to_have_count(1)
+        expect(self.page.locator('#s1-error')).to_be_hidden()
 
     def test_mobile_navigation_disclosure_and_focus_remain_usable(self):
         for width in [768, 390, 320]:
