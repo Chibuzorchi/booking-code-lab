@@ -443,6 +443,22 @@ class ConsoleStateTests(unittest.TestCase):
         self.assertEqual(seen['banded']['shown'], seen['beside_stage2']['s1'])
         self.assertEqual(6, len(seen['reset']['shown']))
 
+    def test_unavailable_saved_codes_keep_retry_across_provider_switches(self):
+        seen = self.seen['codes_recovery']
+        for name in ('failed', 'back'):
+            self.assertIn('Checkpoint unreadable', seen[name]['error'], name)
+            self.assertIn('not a count of zero', seen[name]['error'], name)
+            self.assertFalse(seen[name]['retry_hidden'], name)
+            self.assertFalse(seen[name]['codes_hidden'], name)
+        self.assertEqual('', seen['away']['error'])
+        self.assertEqual(1, seen['asked'])
+        self.assertTrue(seen['recovered']['retry_hidden'])
+        self.assertEqual('', seen['recovered']['error'])
+        # Saved is the checkpoint's own count, not the eligible pool's.
+        self.assertEqual(['Saved so far', '27'], seen['summary'][0])
+        self.assertEqual(['Eligible so far', '26'], seen['summary'][1])
+        self.assertIn('27 code(s) were saved before it stopped', seen['note'])
+
     def test_expired_history_can_be_revealed_copied_and_hidden(self):
         seen = self.seen['expired_history']
         self.assertEqual(seen['hidden']['cards'], 0)

@@ -82,10 +82,14 @@
   <div id="s1-codes" hidden>
     <h3>All codes from this run</h3>
     <p class="error" id="s1-codes-error" role="alert" aria-atomic="true" hidden></p>
+    <button id="s1-codes-retry" type="button" hidden>Retry listing codes</button>
     <p class="notice" id="s1-band" hidden></p>
+    <ul class="facts" id="s1-summary" aria-label="Saved codes summary" hidden></ul>
     <button id="s1-expired" type="button" aria-pressed="false" hidden>Show expired codes</button>
     <fieldset id="s1-view" hidden>
+      <legend>Find and sort saved codes</legend>
       <div class="grid">
+        <label>Search code<span>any part of a booking code</span><input id="s1-search" type="search" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
         <label>Order<span>unpriced codes sit last either way</span><select id="s1-order"><option value="asc">Lowest odds first</option><option value="desc">Highest odds first</option></select></label>
         <label>From odds<span>blank = no floor</span><input id="s1-min" type="number" min="0" step="any"></label>
         <label>To odds<span>blank = no ceiling</span><input id="s1-max" type="number" min="0" step="any"></label>
@@ -94,7 +98,7 @@
         <button id="s1-view-reset" type="button">Show all</button>
       </div>
     </fieldset>
-    <div class="bar" id="s1-bar" hidden><p id="s1-count"></p><div class="ticket-actions"><button id="s1-check-results" type="button">Check all results for this run</button><button id="s1-copy-all" type="button">Copy shown codes</button></div></div>
+    <div class="bar" id="s1-bar" hidden><p id="s1-count"></p><div class="ticket-actions"><button id="s1-check-results" type="button">Check all results for this run</button><button id="s1-copy-all" type="button">Copy all matching codes</button></div></div>
     <div id="s1-cards"></div>
     <div class="bar" id="s1-pager" hidden><button id="s1-prev" type="button">‹ Prev</button><p id="s1-page-info"></p><button id="s1-next" type="button">Next ›</button></div>
   </div>

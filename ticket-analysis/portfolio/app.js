@@ -310,8 +310,8 @@ function seedHint() {
    whole and the incoming one is repainted from its own remembered reports. */
 /* How stage 2's list is being looked at. Kept with the rest of the provider's
    view, so switching away and back shows the same list, not a reset one. */
-function blankPrefs() { return {order: 'asc', min: null, max: null, minLegs: null, maxLegs: null}; }
-function blankView() { return {run: null, codes: null, codesAsked: null, stage2: null, stage3: null, submission: null, showExpired: false,
+function blankPrefs() { return {order: 'asc', min: null, max: null, minLegs: null, maxLegs: null, search: ''}; }
+function blankView() { return {run: null, codes: null, codesAsked: null, codesError: null, stage2: null, stage3: null, submission: null, showExpired: false,
                                error: null, statusError: null, cancelling: null, prefs: blankPrefs(), codesPrefs: blankPrefs(), codesPage: 0, page: 0}; }
 
 /* Pagination is purely a slice of whatever `arrange()` already produced, so it
@@ -350,7 +350,7 @@ function clearRun() {
 }
 
 function restore() {
-  const {run, codes, codesAsked, stage2, stage3, prefs, codesPrefs, showExpired} = view;
+  const {run, codes, codesAsked, codesError, stage2, stage3, prefs, codesPrefs, showExpired} = view;
   clearRun();
   clearAnalysis();
   $('s2-run').disabled = false;
@@ -361,6 +361,7 @@ function restore() {
   }
   view.codes = codes;             // showRun's run-change reset cleared these
   view.codesAsked = codesAsked;
+  view.codesError = codesError;
   view.stage2 = stage2;
   view.stage3 = stage3;
   view.prefs = prefs || blankPrefs();
@@ -369,6 +370,7 @@ function restore() {
   writePrefs('s2', view.prefs);
   writePrefs('s1', view.codesPrefs);
   if (codes) renderCodes(codes);
+  showCodesError();               // a failed listing keeps its message and Retry while away
   loadCodes();                    // a no-op unless the run moved on while away
   if (stage2) {
     renderDistinct(stage2);
@@ -570,7 +572,7 @@ async function startScan(event) {
   const owner = view, token = {};
   owner.submission = token;
   owner.error = null;
-  owner.run = owner.codes = owner.codesAsked = owner.stage2 = owner.stage3 = null;
+  owner.run = owner.codes = owner.codesAsked = owner.codesError = owner.stage2 = owner.stage3 = null;
   restore();
   syncRoute();
   try {
@@ -760,6 +762,7 @@ function renderCodes(report) {
   expiredButton.textContent = `${view.showExpired ? 'Hide' : 'Show'} ${expired.length} expired code(s)`;
   expiredButton.setAttribute('aria-pressed', String(Boolean(view.showExpired)));
   $('s1-view').hidden = !rows.length;
+  $('s1-codes-retry').hidden = true;
 
   const shown = arrange(rows, basis, prefs);
   const codes = shown.rows.map(([ticket]) => bareCode(ticket));
@@ -767,8 +770,8 @@ function renderCodes(report) {
   const lead = !report.partial
     ? `${report.pool_size} upcoming code(s) available for analysis; ${report.saved_count ?? rows.length} saved code(s) in this run, overlapping ones included.`
     : ACTIVE.has(state)
-      ? `${report.pool_size} code(s) saved so far, overlapping ones included. The scan is still running; this list grows as more are saved.`
-      : `The scan stopped early (${state}). ${report.pool_size} code(s) were saved before it stopped, overlapping ones included.`;
+      ? `${report.saved_count ?? report.pool_size} code(s) saved so far, overlapping ones included. The scan is still running; this list grows as more are saved.`
+      : `The scan stopped early (${state}). ${report.saved_count ?? report.pool_size} code(s) were saved before it stopped, overlapping ones included.`;
   const parts = rows.length ? [lead, ...viewNote(rows.length, prefs, shown)]
     : [expired.length ? 'No upcoming codes in this snapshot.'
        : report.partial ? 'No codes saved yet.' : 'This run found no codes in its odds band.'];
@@ -777,10 +780,24 @@ function renderCodes(report) {
   const otherExcluded = report.excluded.length - expired.length;
   if (otherExcluded > 0) parts.push(`${otherExcluded} ${expired.length ? 'other ' : ''}extract row(s) were excluded from the pool.`);
   $('s1-count').textContent = parts.join(' ');
+  const unavailable = 'Unavailable';
+  facts('s1-summary', [
+    [report.partial ? 'Saved so far' : 'Saved in run', report.saved_count == null ? unavailable : num(report.saved_count)],
+    [report.partial ? 'Eligible so far' : 'Eligible now', report.pool_size == null ? unavailable : num(report.pool_size)],
+    ['Started', report.expired_codes == null ? unavailable : num(expired.length)],
+    ['Other exclusions', num(Math.max(0, otherExcluded))],
+    ['Showing', num(shown.rows.length)]]);
   $('s1-bar').hidden = false;
   $('s1-copy-all').onclick = () => Copy.button($('s1-copy-all'), codes.join('\n'),
-    {copied: 'Copied', empty: 'No codes shown', label: 'The booking codes shown, to copy'});
+    {copied: 'Copied', empty: 'No codes match', label: 'The matching booking codes, to copy'});
   $('s1-copy-all').disabled = !codes.length;
+  // Copy.button keeps the label it flashes over, even after the flash ends: update
+  // that memory always, and the visible text unless a flash is showing over it.
+  const copyLabel = codes.length ? `Copy all ${num(codes.length)} matching code${codes.length === 1 ? '' : 's'}` : 'Copy all matching codes';
+  const copyButton = $('s1-copy-all'), flashing = copyButton.classList
+    && (copyButton.classList.contains('is-copied') || copyButton.classList.contains('is-copy-failed'));
+  if (copyButton.dataset && 'copyLabel' in copyButton.dataset) copyButton.dataset.copyLabel = copyLabel;
+  if (!flashing) copyButton.textContent = copyLabel;
   $('s1-check-results').textContent = `Check all ${report.saved_count ?? rows.length} saved codes`;
   $('s1-check-results').disabled = !report.saved_count || Boolean(view.results && view.results.job);
 
@@ -795,6 +812,13 @@ function renderCodes(report) {
       () => legTable(ticket.legs), ticket.row_id ? () => checkSavedCode(ticket.row_id, report.run_id) : null));
   }
   renderPager('s1', page, totalPages, shown.rows.length);
+}
+
+function showCodesError() {
+  if (!view.codesError) return;
+  $('s1-codes').hidden = false;
+  fail('s1-codes-error', view.codesError);
+  $('s1-codes-retry').hidden = false;
 }
 
 /* Asked whenever the run has something new to list: once when it succeeds,
@@ -815,7 +839,9 @@ async function loadCodes() {
   const mine = gen, run_id = run.run_id;
   const request = {};
   analysisRequest.s1 = request;
+  view.codesError = null;
   fail('s1-codes-error', '');
+  $('s1-codes-retry').hidden = true;
   try {
     const report = await api('POST', '/api/codes', {run_id});
     if (mine !== gen || !view.run || view.run.run_id !== run_id) return;
@@ -823,11 +849,13 @@ async function loadCodes() {
     renderCodes(report);
   } catch (e) {
     if (mine !== gen || !view.run || view.run.run_id !== run_id) return;
-    // A run that has not finished may simply have nothing saved; only a
-    // succeeded run owes a list, so only that failure is worth reporting.
-    if (!done) return;
-    $('s1-codes').hidden = false;
-    fail('s1-codes-error', `Could not list this run's codes: ${e.message}`);
+    // 409 is the server saying this run has nothing saved yet, which is an answer,
+    // not a failure. Anything else leaves the saved codes unavailable -- not zero --
+    // for a finished, failed or cancelled run alike, and Retry asks again.
+    if (e.status === 409 && !done) return;
+    view.codesError = `Could not list this run's codes: ${e.message}` + (done ? ''
+      : ' Codes saved so far may still exist; this is not a count of zero.');
+    showCodesError();
   } finally {
     if (analysisRequest.s1 === request) {
       analysisRequest.s1 = null;
@@ -1066,7 +1094,7 @@ const stage3Note = report => `Ready on the same eligible pool as stage 2 (${repo
 
 function clearAnalysis() {               // the DOM only; the remembered reports survive
   $('s1-cards').replaceChildren();
-  for (const id of ['s1-codes', 's1-band', 's1-view', 's1-bar', 's1-pager']) $(id).hidden = true;
+  for (const id of ['s1-codes', 's1-band', 's1-summary', 's1-codes-retry', 's1-view', 's1-bar', 's1-pager']) $(id).hidden = true;
   fail('s1-codes-error', '');
   $('s2-cards').replaceChildren();
   for (const id of ['s2-facts', 's2-band', 's2-view', 's2-bar', 's2-more', 's2-pager']) $(id).hidden = true;
@@ -1080,6 +1108,7 @@ function clearAnalysis() {               // the DOM only; the remembered reports
 function resetAnalysis() {               // the analysis is gone, not just off screen
   view.codes = null;
   view.codesAsked = null;
+  view.codesError = null;
   view.showExpired = false;
   view.stage2 = null;
   view.stage3 = null;
@@ -1143,6 +1172,8 @@ function ticketCard(code, columns, detail, onCheck = null) {
     if (!card.open || card.dataset.loaded) return;
     card.dataset.loaded = 'y';
     const box = node('div', undefined, 'detail');
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-label', `Selections for booking code ${code}`);
     box.append(detail());
     card.append(box);
   });
@@ -1164,7 +1195,8 @@ function readPrefs(stage) {
   };
   return {order: $(stage + '-order').value === 'desc' ? 'desc' : 'asc',
           min: bound(stage + '-min'), max: bound(stage + '-max'),
-          minLegs: bound(stage + '-min-legs'), maxLegs: bound(stage + '-max-legs')};
+          minLegs: bound(stage + '-min-legs'), maxLegs: bound(stage + '-max-legs'),
+          search: $(stage + '-search') ? $(stage + '-search').value.trim() : ''};
 }
 
 function writePrefs(stage, prefs) {
@@ -1173,18 +1205,21 @@ function writePrefs(stage, prefs) {
   $(stage + '-max').value = prefs.max == null ? '' : String(prefs.max);
   $(stage + '-min-legs').value = prefs.minLegs == null ? '' : String(prefs.minLegs);
   $(stage + '-max-legs').value = prefs.maxLegs == null ? '' : String(prefs.maxLegs);
+  if ($(stage + '-search')) $(stage + '-search').value = prefs.search || '';
 }
 
 function arrange(tickets, basis, prefs) {
   const rows = tickets.map((ticket, index) => [ticket, index, oddsOf(ticket, basis)]);
   const oddsBanded = prefs.min != null || prefs.max != null;
   const legsBanded = prefs.minLegs != null || prefs.maxLegs != null;
+  const needle = (prefs.search || '').toLocaleLowerCase();
   // A banded list can only contain codes whose odds are known, so unpriced
   // ones drop out here; the count line says how many did. Likewise a code
   // with no known leg count cannot match a legs band.
-  const banded = !oddsBanded && !legsBanded ? rows.slice()
+  const banded = !oddsBanded && !legsBanded && !needle ? rows.slice()
     : rows.filter(([ticket, , odds]) =>
-        (!oddsBanded || (odds != null
+        (!needle || bareCode(ticket).toLocaleLowerCase().includes(needle))
+        && (!oddsBanded || (odds != null
           && (prefs.min == null || odds >= prefs.min)
           && (prefs.max == null || odds <= prefs.max)))
         && (!legsBanded || (Number.isFinite(ticket.num_legs)
@@ -1197,7 +1232,7 @@ function arrange(tickets, basis, prefs) {
     if (b[2] == null) return -1;
     return sign * (a[2] - b[2]);
   });
-  return {rows: banded, banding: oddsBanded || legsBanded, oddsBanded, legsBanded,
+  return {rows: banded, banding: oddsBanded || legsBanded || Boolean(needle), oddsBanded, legsBanded, needle,
           droppedUnpriced: oddsBanded ? rows.filter(row => row[2] == null).length : 0};
 }
 
@@ -1214,6 +1249,7 @@ function viewNote(total, prefs, shown) {
   const bands = [];
   if (shown.oddsBanded) bands.push(`odds ${range(prefs.min, prefs.max)}`);
   if (shown.legsBanded) bands.push(`${range(prefs.minLegs, prefs.maxLegs)} legs`);
+  if (shown.needle) bands.push(`code containing "${prefs.search}"`);
   const parts = [`Showing ${shown.rows.length} of ${total} with ${bands.join(' and ')}, ${order}.`];
   if (shown.droppedUnpriced)
     parts.push(`${shown.droppedUnpriced} unpriced code(s) cannot match a band and are hidden.`);
@@ -1458,7 +1494,8 @@ $('s1-expired').addEventListener('click', () => {
   view.codesPage = 0;
   if (view.codes) renderCodes(view.codes);
 });
-for (const id of ['s1-order', 's1-min', 's1-max', 's1-min-legs', 's1-max-legs']) $(id).addEventListener('input', relistCodes);
+for (const id of ['s1-search', 's1-order', 's1-min', 's1-max', 's1-min-legs', 's1-max-legs']) $(id).addEventListener('input', relistCodes);
+$('s1-codes-retry').addEventListener('click', () => { view.codesAsked = null; loadCodes(); });
 $('s1-view-reset').addEventListener('click', () => {
   view.codesPrefs = blankPrefs();
   writePrefs('s1', view.codesPrefs);
