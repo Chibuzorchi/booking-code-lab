@@ -95,15 +95,28 @@ class APITests(RegistryTestBase):
         with patch.object(self.reg, 'start_scan', return_value={'run_id': 'fake'}) as start:
             self.assertEqual(self.request('POST', '/api/scan', {'provider': 'sportybet', 'seed': 'abc123', 'min_odds': 0})[0], 202)
             start.assert_called_once_with(provider='sportybet', seed='ABC123', fresh_seed=False,
-                                          min_odds=1, max_odds=350000, max_qualifying=0,
+                                          min_odds=1, max_odds=350000, min_legs=0, max_legs=0,
+                                          max_qualifying=0,
                                           max_codes=25000, depth=3)
+
+    def test_scan_passes_the_legs_range_and_rejects_a_bad_one(self):
+        base = {'provider': 'sportybet', 'seed': 'abc123'}
+        with patch.object(self.reg, 'start_scan', return_value={'run_id': 'fake'}) as start:
+            self.assertEqual(self.request('POST', '/api/scan', {**base, 'min_legs': 3, 'max_legs': 5})[0], 202)
+            self.assertEqual((3, 5), (start.call_args.kwargs['min_legs'], start.call_args.kwargs['max_legs']))
+            start.reset_mock()
+            for change in ({'min_legs': -1}, {'max_legs': 2.5}, {'min_legs': '3'}, {'min_legs': True},
+                           {'min_legs': 5, 'max_legs': 3}):
+                self.assertEqual(self.request('POST', '/api/scan', {**base, **change})[0], 400, change)
+            start.assert_not_called()
 
     def test_fresh_seed_scan_books_its_own_code(self):
         with patch.object(self.reg, 'start_scan', return_value={'run_id': 'fake'}) as start:
             status, _ = self.request('POST', '/api/scan', {'provider': 'bet9ja', 'fresh_seed': True})
             self.assertEqual(status, 202)
             start.assert_called_once_with(provider='bet9ja', seed=None, fresh_seed=True,
-                                          min_odds=1, max_odds=350000, max_qualifying=0,
+                                          min_odds=1, max_odds=350000, min_legs=0, max_legs=0,
+                                          max_qualifying=0,
                                           max_codes=25000, depth=3)
         # An empty seed field alongside the checkbox is the console's own shape.
         with patch.object(self.reg, 'start_scan', return_value={'run_id': 'fake'}) as start:

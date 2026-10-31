@@ -3,7 +3,7 @@
  * already left, a provider switch, cancelled_unresolved settling, and a new run
  * that arrives already succeeded.
  *
- * The script is executed as written (extracted from portfolio/app.html) against a
+ * The script is executed as written (loaded from portfolio/app.js) against a
  * DOM stub, a fetch whose replies this file resolves by hand, and fake timers, so
  * every observation below is the real code's behaviour. The clipboard paths are not
  * stubbed here: copy_probe.js covers those against the helper itself.
@@ -14,9 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const PAGE = path.join(__dirname, '..', '..', 'portfolio', 'app.html');
-const blocks = fs.readFileSync(PAGE, 'utf8').match(/<script>\n([\s\S]*?)<\/script>/g);
-const SOURCE = blocks[blocks.length - 1].replace(/^<script>\n/, '').replace(/<\/script>$/, '');
+const SOURCE = fs.readFileSync(path.join(__dirname, '..', '..', 'portfolio', 'app.js'), 'utf8');
 
 class El {
   constructor(tag) {
@@ -33,6 +31,7 @@ class El {
     this.checked = false;
   }
   scrollIntoView() {}
+  focus() {}
   querySelectorAll(tag) {
     return this.childNodes.flatMap(child => [
       ...(child.tagName === tag.toUpperCase() ? [child] : []), ...child.querySelectorAll(tag)]);
@@ -42,6 +41,7 @@ class El {
   appendChild(kid) { this.childNodes.push(kid); return kid; }
   replaceChildren(...kids) { this.childNodes = kids; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
+  removeAttribute(name) { delete this.attributes[name]; }
   getAttribute(name) { return this.attributes[name]; }
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
   fire(type) {
@@ -78,8 +78,14 @@ function boot(values) {
   }));
   const setIntervalStub = fn => { const id = nextTimer++; world.timers.set(id, fn); return id; };
   const clearIntervalStub = id => { world.timers.delete(id); };
+  const window = {location: {hash: ''}, scrollY: 0, addEventListener() {}, scrollTo() {},
+    matchMedia: () => ({matches: false})};
+  window.history = {
+    pushState(_state, _title, hash) { window.location.hash = hash; },
+    replaceState(_state, _title, hash) { window.location.hash = hash; },
+  };
   new Function('document', 'window', 'fetch', 'setInterval', 'clearInterval', 'setTimeout', 'Copy', SOURCE)(
-    document, {addEventListener() {}}, fetch, setIntervalStub, clearIntervalStub, fn => fn(),
+    document, window, fetch, setIntervalStub, clearIntervalStub, fn => fn(),
     {button(el, value) { world.copied.push(value); return true; },
      text() { return true; }, flash() {}, offer() {}, shortcut: () => 'Ctrl-C'});
   return world;
@@ -154,11 +160,17 @@ async function pick(world, run_id, state, provider) {
   const latest = world.pending.map(c => c.url).lastIndexOf('/api/runs?provider=' + world.el('provider').value);
   answer(world.pending.splice(latest, 1)[0], {runs: [runStatus(run_id, state, provider)]});
   await settle();
-  world.el('runs').value = run_id;
+  chooseRun(world, run_id);
   press(world, 'runs-load');
   await settle();
   answer(take(world, `/api/scan/${run_id}`), runStatus(run_id, state, provider));
   await settle();
+}
+
+function chooseRun(world, run_id) {
+  const radio = world.el('runs-rows').querySelectorAll('input').find(el => el.value === run_id);
+  if (!radio) throw new Error('Missing run choice ' + run_id);
+  radio.checked = true; radio.fire('change');
 }
 
 const OWNER = {'s1-run': 's1-fields', 's1-cancel': 's1-fields', 's2-run': 's2-fields',
@@ -341,10 +353,10 @@ Object.assign(scenarios, {
     await pick(w, 'RUN_A', 'succeeded');
     await switchTo(w, 'sportybet');
     const locked = w.el('runs').disabled && w.el('runs-load').disabled;
-    const cleared = w.el('runs').value === '' && !w.el('runs').childNodes.some(x => x.value === 'RUN_A');
+    const cleared = !w.el('runs-rows').querySelectorAll('input').some(x => x.value === 'RUN_A');
     answer(take(w, '/api/runs'), {runs: [runStatus('RUN_B', 'succeeded', 'sportybet')]});
     await settle();
-    w.el('runs').value = 'RUN_B';
+    chooseRun(w, 'RUN_B');
     press(w, 'runs-load'); await settle();
     answer(take(w, '/api/scan/RUN_B'), runStatus('RUN_A', 'succeeded', 'bet9ja'));
     await settle();
@@ -421,6 +433,35 @@ Object.assign(scenarios, {
     const unticked = {seed_disabled: world.el('seed').disabled,
                       hint: world.el('seed-hint').textContent};
     return {body: post.body, before, ticked, unticked, while_booking, booked, finished};
+  },
+
+  /* The legs band narrows the list by number of games, alongside the odds band. */
+  async legs_view() {
+    const world = await start();
+    await pick(world, 'RUN_A', 'succeeded');
+    press(world, 's2-run');
+    await settle();
+    const report = bandedReport('RUN_A');
+    answer(take(world, '/api/distinct'), {...report, distinct: [
+      ticket('LOW111', 9, 3), ticket('MID222', 400, 5), ticket('HIGH33', 9000, 8), ticket('NOPRICE', null, 4)]});
+    await settle();
+    const set = (id, value) => { world.el(id).value = value; world.el(id).fire('input'); };
+    const copy = () => { world.copied.length = 0; world.el('s2-copy-all').fire('click');
+                         return world.copied[0]; };
+    set('s2-max-legs', '5');
+    const at_most_5 = {shown: shownCodes(world), note: world.el('s2-count').textContent, copied: copy()};
+    set('s2-min-legs', '4');
+    const four_to_five = {shown: shownCodes(world), note: world.el('s2-count').textContent};
+    set('s2-min', '100');
+    const with_odds = {shown: shownCodes(world), note: world.el('s2-count').textContent};
+    set('s2-min', '');
+    set('s2-min-legs', '6');
+    set('s2-max-legs', '5');
+    const inverted = {shown: shownCodes(world), note: world.el('s2-count').textContent};
+    world.el('s2-view-reset').fire('click');
+    const reset = {shown: shownCodes(world), min: world.el('s2-min-legs').value,
+                   max: world.el('s2-max-legs').value};
+    return {at_most_5, four_to_five, with_odds, inverted, reset};
   },
 
   /* F9: stage 2's order/band controls are a view, not another analysis. */

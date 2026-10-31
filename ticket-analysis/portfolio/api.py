@@ -36,7 +36,7 @@ def provider_name(value):
 
 def scan_params(body):
     fields(body, ('provider', 'seed', 'fresh_seed', 'min_odds', 'max_odds',
-                  'want_count', 'try_budget'))
+                  'min_legs', 'max_legs', 'want_count', 'try_budget'))
     provider = provider_name(body.get('provider'))
     fresh = body.get('fresh_seed', False)
     if type(fresh) is not bool:
@@ -62,6 +62,15 @@ def scan_params(body):
         if type(value) is not int or value < minimum:
             raise ParamError(f'{name} must be an integer >= {minimum}')
         values[name] = value
+    for name in ('min_legs', 'max_legs'):
+        value = body.get(name)
+        if value is None or value == '':
+            value = 0
+        if type(value) is not int or value < 0:
+            raise ParamError(f'{name} must be an integer >= 0')
+        values[name] = value
+    if 0 < values['max_legs'] < values['min_legs']:
+        raise ParamError('positive max_legs must be >= min_legs')
     for name, default in (('min_odds', 1), ('max_odds', 350000)):
         value = body.get(name, default)
         if value is None or value == '':
@@ -75,7 +84,8 @@ def scan_params(body):
         raise ParamError('positive max_odds must be >= min_odds')
     return dict(provider=provider, seed=seed, fresh_seed=fresh,
                 min_odds=values['min_odds'],
-                max_odds=values['max_odds'], max_qualifying=values['want_count'],
+                max_odds=values['max_odds'], min_legs=values['min_legs'],
+                max_legs=values['max_legs'], max_qualifying=values['want_count'],
                 max_codes=values['try_budget'], depth=3)
 
 

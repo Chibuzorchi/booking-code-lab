@@ -169,7 +169,8 @@ def isolated_env(workspace: Path, extra: dict | None = None) -> dict[str, str]:
 def scan_argv(python: str, seed: str | None, run_dir: Path, *, max_qualifying: int = 0,
               min_odds: float | None = None, max_odds: float | None = None,
               max_codes: int | None = None, depth: int | None = None,
-              fresh_seed: bool = False) -> list[str]:
+              fresh_seed: bool = False, min_legs: int | None = None,
+              max_legs: int | None = None) -> list[str]:
     """Argument list for the provider scan; never passed to a shell.
 
     Flag semantics verified in both scan_code CLIs: --max-qualifying sets
@@ -188,6 +189,10 @@ def scan_argv(python: str, seed: str | None, run_dir: Path, *, max_qualifying: i
         argv += ["--min-odds", str(min_odds)]
     if max_odds is not None:
         argv += ["--max-odds-cap", str(max_odds)]
+    if min_legs is not None:
+        argv += ["--min-legs", str(int(min_legs))]
+    if max_legs is not None:
+        argv += ["--max-legs", str(int(max_legs))]
     if max_codes is not None:
         argv += ["--max-codes", str(int(max_codes))]
     if depth is not None:
@@ -436,7 +441,8 @@ class WorkerHost:
                    min_odds: float | None = None, max_odds: float | None = None,
                    max_codes: int | None = None, depth: int | None = None,
                    env_extra: dict | None = None, run_dir: Path | None = None,
-                   run_lock_fd: int | None = None) -> ScanJob:
+                   run_lock_fd: int | None = None, min_legs: int | None = None,
+                   max_legs: int | None = None) -> ScanJob:
         # A fresh-seed run has no seed yet by definition: the worker books one
         # and writes it to <run_dir>/seed.json before the scan phase starts.
         if fresh_seed:
@@ -482,7 +488,8 @@ class WorkerHost:
 
         argv = scan_argv(self.python, seed, owned_dir, max_qualifying=max_qualifying,
                          min_odds=min_odds, max_odds=max_odds,
-                         max_codes=max_codes, depth=depth, fresh_seed=fresh_seed)
+                         max_codes=max_codes, depth=depth, fresh_seed=fresh_seed,
+                         min_legs=min_legs, max_legs=max_legs)
         env = isolated_env(self.workspace, env_extra)
         owner = {"provider": provider, "run_id": owned_dir.name,
                  "started_at": started_at}

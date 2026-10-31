@@ -1,0 +1,94 @@
+
+:root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#182b29;background:#f4f6f3;font-size:15px;color-scheme:light}
+*{box-sizing:border-box}body{margin:0}button,input,select,textarea{font:inherit}button,select{cursor:pointer}
+[hidden]{display:none!important}
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid #bb690c;outline-offset:3px}
+
+
+h1{font-size:28px;margin:0 0 20px;font-weight:650;letter-spacing:-.5px}
+#historical-results p{overflow-wrap:anywhere}
+
+main{max-width:1280px;width:100%;margin:auto;padding:24px 28px 64px}
+.panel{background:#fff;border:1px solid #dce4dc;border-radius:14px;margin-bottom:18px;padding:22px}
+h2{font-size:19px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+h3{font-size:15px;margin:22px 0 0}
+.step{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#123e35;color:#fff;font-size:13px;font-weight:700}
+fieldset{border:0;margin:0;padding:0}
+.grid{display:flex;gap:14px;align-items:end;flex-wrap:wrap;margin-top:14px}
+label{display:flex;flex-direction:column;gap:7px;font-size:13px;font-weight:600}
+label span{font-weight:400;color:#5c6c64;font-size:12px}
+input,select{padding:10px;border:1px solid #7b8d80;border-radius:7px;background:#fff;color:#182b29;min-height:44px;min-width:120px}
+button{border:1px solid #7b8d80;background:#f5f8f4;border-radius:7px;padding:10px 14px;color:#184b3e;min-height:44px;font-weight:600}
+button.go{background:#1c5344;border-color:#1c5344;color:#fff}
+button:disabled{opacity:.45;cursor:default}
+button.is-copied{background:#1d6b3a;color:#fff;border-color:#1d6b3a}
+button.is-copy-failed{background:#fbe6cf;color:#8a4a0c;border-color:#bb690c}
+.copy-fallback{display:block;margin-top:8px;width:100%;max-width:100%;font:14px/1.4 ui-monospace,monospace;padding:8px;border:1px solid #bb690c;border-radius:6px;background:#fff8ef;color:#182b29}
+summary .copy-fallback{grid-column:1/-1}
+.notice{margin:8px 0 0;color:#5c6c64;font-size:13px;line-height:1.6}
+.error{margin:10px 0 0;padding:11px 13px;border-radius:8px;background:#fdecec;border:1px solid #e3b3b3;color:#8a1c1c;font-size:13px;line-height:1.5}
+.ok{color:#1d6b3a;font-weight:600}.bad{color:#8a4a0c;font-weight:600}
+.facts{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0 0;padding:0;list-style:none}
+.facts li{background:#f4f7f3;border:1px solid #e0e8e0;border-radius:9px;padding:9px 12px;min-width:104px}
+.facts b{display:block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6c64;font-weight:700}
+.facts span{font-variant-numeric:tabular-nums;font-size:17px}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:18px 0 0;flex-wrap:wrap}
+.bar p{margin:0;font-size:13px;color:#5c6c64}
+.ticket{border:1px solid #dce4dc;border-radius:9px;margin-top:9px;overflow:hidden}
+.ticket summary{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;gap:14px;padding:14px;align-items:center}
+.ticket-code{flex:1 1 160px;min-width:0;overflow-wrap:anywhere}
+.ticket-metric{flex:0 1 auto;min-width:64px}
+.ticket-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;max-width:100%;margin-left:auto}
+.ticket-history{flex:1 1 100%;display:flex;gap:8px;align-items:baseline;font-size:13px;color:#5c6c64}
+.ticket-history small{margin:0!important}.ticket-actions button{white-space:nowrap}
+/* Keep the summary's keyboard outline inside the card's clipped border. */
+.ticket summary:focus-visible{outline-offset:-3px}
+.ticket summary::-webkit-details-marker{display:none}.ticket summary:hover{background:#f6f9f5}
+.ticket[open] summary{background:#edf4ed;border-bottom:1px solid #dce4dc}
+.ticket summary small{display:block;font-size:11px;color:#5c6c64;margin-bottom:4px}
+.ticket summary strong{font-family:ui-monospace,monospace;font-size:16px}
+.n{font-variant-numeric:tabular-nums}.chev{color:#527363}.ticket[open] .chev{transform:rotate(90deg)}
+.detail{padding:6px 14px 14px}.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;text-align:left;font-size:13px}
+th{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#5c6c64;background:#f7f9f5}
+th,td{padding:10px 9px;border-bottom:1px solid #e7ece4;vertical-align:top}
+td small{display:block;color:#67796d;margin-top:4px}td.n{text-align:right}
+details.more{margin-top:16px}details.more>summary{cursor:pointer;font-weight:600;font-size:13px;color:#294d3d}
+label.check{max-width:270px}label.check .row{display:flex;align-items:center;gap:9px;min-height:44px}
+label.check input{width:18px;height:18px;min-width:0;min-height:0;flex:none;accent-color:#1c5344}
+noscript{display:block;padding:18px;background:#fff5e3;border-radius:10px;margin-bottom:18px}
+@media(max-width:700px){h1{font-size:26px}main{padding:16px 12px 48px}.panel{padding:16px}
+.ticket summary{gap:12px}.ticket-code{flex-basis:100%}.ticket-actions{margin-left:0}.chev{display:none}label{width:100%}input,select{width:100%}}
+
+/* Application shell. Workflow controls keep their existing layout and behavior. */
+a{color:#184b3e;text-underline-offset:3px}
+.app-layout{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:100vh}
+.app-layout.nav-closed{grid-template-columns:minmax(0,1fr)}
+.app-sidebar{position:sticky;top:0;height:100vh;padding:28px 18px;background:#edf2ee;border-right:1px solid #d0dcd3;display:flex;flex-direction:column;gap:8px}
+.app-name{font-size:19px;font-weight:700;margin:0 10px}.sidebar-caption{margin:0 10px 24px;color:#5c6c64;font-size:13px}
+#app-nav{display:flex;flex-direction:column;gap:6px}#app-nav a{padding:12px;border-radius:7px;text-decoration:none;font-weight:600;min-height:44px}
+#app-nav a:hover{background:#e0e9e2}#app-nav a[aria-current=page]{background:#1c5344;color:#fff}
+.sidebar-note{margin:auto 10px 0;padding-top:24px;font-size:12px;line-height:1.6;color:#5c6c64}
+.app-workspace{min-width:0}.app-topbar{padding:18px 28px;border-bottom:1px solid #d0dcd3;background:#fff;display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+.workspace-controls{display:flex;align-items:end;gap:16px;flex-wrap:wrap}.workspace-controls label{min-width:140px}
+.run-context{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 18px;flex:1;min-width:220px;max-width:680px;font-size:13px}
+.context-label{font-size:12px;color:#5c6c64}.run-context strong{grid-column:1;overflow-wrap:anywhere;font-size:15px}
+#context-state{grid-column:1;color:#5c6c64}#change-run{grid-column:2;grid-row:1/4;align-self:center;padding:10px 0;min-height:44px}
+#context-details{grid-column:1/-1;color:#5c6c64}#context-details summary{cursor:pointer;padding:4px 0}#context-id{display:block;overflow-wrap:anywhere;padding-top:6px}
+#saved-runs .grid label{min-width:0;max-width:100%}.run-search{flex:1;min-width:200px!important}
+#page-title:focus{outline:none}.skip-link{position:fixed;top:8px;left:8px;transform:translateY(-200%);z-index:2;padding:12px;background:#fff;border:2px solid #184b3e}.skip-link:focus{transform:none}
+@media(max-width:850px){
+ .app-layout{display:block}.app-sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid #d0dcd3;padding:18px}
+ .sidebar-caption{margin-bottom:8px}.sidebar-note{display:none}#app-nav{flex-direction:row;flex-wrap:wrap}
+ .app-topbar{padding:16px;gap:16px}.workspace-controls{width:100%;justify-content:space-between}.workspace-controls label{width:auto}
+ .run-context{min-width:0;width:100%;max-width:none}main{padding:20px 16px 48px}
+}
+@media(max-width:400px){.workspace-controls{align-items:stretch}.workspace-controls label{flex:1}.run-context{column-gap:10px}}
+
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+#runs{min-width:0}.runs-table{margin-top:16px}.runs-table table{min-width:740px;width:100%}.runs-table td{vertical-align:top}
+.runs-table input[type=radio]{min-width:0;width:22px;height:22px;min-height:0;accent-color:#1c5344}
+.runs-table small,.current-label{display:block;margin-top:5px;color:#5c6c64}.current-label{font-weight:600;color:#184b3e}
+.runs-table details{max-width:220px}.runs-table code{display:block;overflow-wrap:anywhere;margin-top:10px}.runs-table summary{cursor:pointer}
+.current-run{background:#edf5ef}.run-choice{margin-top:20px;padding-top:16px;border-top:1px solid #dce4dc}
+.run-choice p{margin:0 0 12px}.runs-table:focus-visible{outline:3px solid #bb690c;outline-offset:3px}

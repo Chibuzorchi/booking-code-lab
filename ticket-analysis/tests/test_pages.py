@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from html.parser import HTMLParser
 
 import portfolio
 from portfolio.distinct_page import render_html
@@ -23,6 +25,45 @@ MARKER = 'const Copy = (() =>'          # the helper's own first line
 def pages(html):
     """Every <script> body in a rendered page, so duplication cannot hide."""
     return re.findall(r'<script[^>]*>(.*?)</script>', html, re.S)
+
+
+class ConsoleAssetTests(unittest.TestCase):
+    def test_console_inlines_each_source_once_in_execution_order(self):
+        html = app_page()
+        css = (PORTFOLIO / 'app.css').read_text(encoding='utf-8')
+        js = (PORTFOLIO / 'app.js').read_text(encoding='utf-8')
+        self.assertEqual(re.findall(r'<style>(.*?)</style>', html, re.S), [css])
+        self.assertEqual(pages(html), [copy_js(), js])
+        for marker in ('__APP_CSS__', '__APP_JS__', PLACEHOLDER):
+            self.assertNotIn(marker, html)
+        external_assets = []
+        class Assets(HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if (tag == 'script' and 'src' in attrs) or (tag == 'link' and attrs.get('rel') == 'stylesheet'):
+                    external_assets.append(attrs)
+        Assets().feed(html)
+        self.assertEqual(external_assets, [])
+
+    def test_console_refuses_missing_or_duplicate_asset_slots(self):
+        from portfolio.pages import _asset
+        for marker in ('__APP_CSS__', '__APP_JS__'):
+            for replacement in ('', marker + marker):
+                with self.subTest(marker=marker, replacement=replacement):
+                    def asset(name):
+                        text = _asset(name)
+                        return text.replace(marker, replacement) if name == 'app.html' else text
+                    with patch('portfolio.pages._asset', side_effect=asset):
+                        with self.assertRaisesRegex(ValueError, 'exactly one'):
+                            app_page()
+
+    def test_console_assets_cannot_close_their_inline_elements(self):
+        from portfolio.pages import _asset
+        for name, closing in (('app.css', '</STYLE>'), ('app.js', '</SCRIPT>')):
+            with self.subTest(asset=name):
+                with patch('portfolio.pages._asset', side_effect=lambda asset: closing if asset == name else _asset(asset)):
+                    with self.assertRaisesRegex(ValueError, 'cannot be inlined'):
+                        app_page()
 
 
 class HelperSourceTests(unittest.TestCase):
@@ -374,6 +415,20 @@ class ConsoleStateTests(unittest.TestCase):
         self.assertEqual(listed['shown'], listed['copied'].split('\n'))
         self.assertEqual(0, listed['s2_cards'])
         self.assertFalse(listed['s2_locked'])
+
+    def test_stage2_list_can_be_banded_by_number_of_legs(self):
+        seen = self.seen['legs_view']
+        self.assertEqual(['LOW111', 'MID222', 'NOPRICE'], seen['at_most_5']['shown'])
+        self.assertIn('Showing 3 of 4 with up to 5 legs', seen['at_most_5']['note'])
+        self.assertEqual(seen['at_most_5']['shown'], seen['at_most_5']['copied'].split('\n'))
+        self.assertEqual(['MID222', 'NOPRICE'], seen['four_to_five']['shown'])
+        self.assertIn('4 to 5 legs', seen['four_to_five']['note'])
+        self.assertEqual(['MID222'], seen['with_odds']['shown'])
+        self.assertIn('odds from 100 up and 4 to 5 legs', seen['with_odds']['note'])
+        self.assertEqual([], seen['inverted']['shown'])
+        self.assertIn('"Min legs" is above "Max legs"', seen['inverted']['note'])
+        self.assertEqual(4, len(seen['reset']['shown']))
+        self.assertEqual(('', ''), (seen['reset']['min'], seen['reset']['max']))
 
     def test_all_codes_list_has_its_own_order_and_band(self):
         seen = self.seen['all_codes']

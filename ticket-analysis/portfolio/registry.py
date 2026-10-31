@@ -203,7 +203,8 @@ class RunRegistry:
                    fresh_seed: bool = False, max_qualifying: int = 0,
                    min_odds: float | None = None, max_odds: float | None = None,
                    max_codes: int | None = None, depth: int | None = None,
-                   env_extra: dict | None = None) -> dict:
+                   env_extra: dict | None = None, min_legs: int | None = None,
+                   max_legs: int | None = None) -> dict:
         """Start a provider scan job; returns the public status view.
 
         Supply either an explicit seed or fresh_seed=True, never both: a
@@ -230,6 +231,11 @@ class RunRegistry:
                                      ("max_codes", max_codes, 1), ("depth", depth, 1)):
             if value is not None and (type(value) is not int or value < minimum):
                 raise ValueError(f"{name} must be an integer >= {minimum}")
+        for name, value in (("min_legs", min_legs), ("max_legs", max_legs)):
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f"{name} must be an integer >= 0")
+        if min_legs and max_legs and max_legs < min_legs:
+            raise ValueError("positive max_legs must be >= min_legs")
         if max_qualifying is None:
             raise ValueError("max_qualifying must be an integer >= 0")
         for name, value in (("min_odds", min_odds), ("max_odds", max_odds)):
@@ -254,17 +260,18 @@ class RunRegistry:
         with _flock_path(run_dir / "run.lock") as run_lock_fd:
             self._launch_scan(provider, seed, run_id, run_dir, run_lock_fd,
                                        max_qualifying, min_odds, max_odds, max_codes,
-                                       depth, env_extra, fresh_seed)
+                                       depth, env_extra, fresh_seed, min_legs, max_legs)
         # The host reference is closed; supervisors/workers retain theirs.
         return self.get(run_id)
 
     def _launch_scan(self, provider, seed, run_id, run_dir, run_lock_fd,
                      max_qualifying, min_odds, max_odds, max_codes, depth, env_extra,
-                     fresh_seed=False):
+                     fresh_seed=False, min_legs=None, max_legs=None):
         request = {"seed": seed, "fresh_seed": bool(fresh_seed),
                    "max_qualifying": int(max_qualifying),
                    "min_odds": min_odds, "max_odds": max_odds,
-                   "max_codes": max_codes, "depth": depth}
+                   "max_codes": max_codes, "depth": depth,
+                   "min_legs": min_legs, "max_legs": max_legs}
         # Diagnostic claim precedes publication. The inherited run.lock,
         # not the PID or timestamp here, is the ownership authority.
         _atomic_write_json(run_dir / "launch.pending",
@@ -286,7 +293,7 @@ class RunRegistry:
                 provider, seed, fresh_seed=fresh_seed, max_qualifying=max_qualifying,
                 min_odds=min_odds, max_odds=max_odds, max_codes=max_codes,
                 depth=depth, run_dir=run_dir, env_extra=env_extra,
-                run_lock_fd=run_lock_fd)
+                run_lock_fd=run_lock_fd, min_legs=min_legs, max_legs=max_legs)
         except JobBusyError:
             self._clear_launch_claim(run_dir)
             shutil.rmtree(run_dir, ignore_errors=True)

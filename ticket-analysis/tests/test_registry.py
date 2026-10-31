@@ -98,6 +98,8 @@ def main() -> int:
     ap.add_argument("--scan", action="store_true")
     ap.add_argument("--min-odds", type=float, default=None)
     ap.add_argument("--max-odds-cap", type=float, default=None)
+    ap.add_argument("--min-legs", type=int, default=None)
+    ap.add_argument("--max-legs", type=int, default=None)
     ap.add_argument("--max-codes", type=int, default=None)
     ap.add_argument("--depth", type=int, default=None)
     ap.add_argument("--max-qualifying", type=int, default=None)
@@ -117,6 +119,9 @@ def main() -> int:
     run_dir = Path(args.run_dir) if args.run_dir else ROOT / "results"
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "started.marker").write_text(str(os.getpid()))
+    (run_dir / "legs.json").write_text(json.dumps({
+        "min_legs": args.min_legs if args.min_legs is not None else int(os.getenv("MIN_LEGS", "0")),
+        "max_legs": args.max_legs if args.max_legs is not None else int(os.getenv("MAX_LEGS", "0"))}))
 
     interval = float(os.getenv("FIXTURE_PROGRESS_INTERVAL", "0.05"))
     tried = 0
@@ -261,6 +266,27 @@ class RegistryTestBase(unittest.TestCase):
 
 
 class RegistryLifecycleTests(RegistryTestBase):
+    def test_api_leg_limits_reach_scanner_and_override_provider_defaults(self):
+        from portfolio.api import dispatch
+        registry = self.registry()
+        for provider in ('bet9ja', 'sportybet'):
+            env_path = self.workspace / provider / '.env'
+            env_path.write_text(env_path.read_text() + '\nMIN_LEGS=8\nMAX_LEGS=12\n')
+            for fresh in (False, True):
+                for limits in ({}, {'min_legs': 0, 'max_legs': 0},
+                               {'min_legs': 3, 'max_legs': 5}):
+                    with self.subTest(provider=provider, fresh=fresh, limits=limits):
+                        body = dict(provider=provider, **limits)
+                        body.update({'fresh_seed': True} if fresh else
+                                    {'seed': 'ABC1234' if provider == 'bet9ja' else 'ABC123'})
+                        status, run = dispatch(registry, 'POST', '/api/scan', body, {})
+                        self.assertEqual(status, 202)
+                        final = self.wait_state(registry, run['run_id'], {STATE_SUCCEEDED, STATE_FAILED})
+                        self.assertEqual(final['state'], STATE_SUCCEEDED)
+                        path = registry.committed_extract(run['run_id']).parent.parent / 'legs.json'
+                        self.assertEqual(json.loads(path.read_text()),
+                                         limits or {'min_legs': 0, 'max_legs': 0})
+
     def test_successful_run_commits_extract_and_policy(self):
         registry = self.registry()
         run = registry.start_scan("bet9ja", "SEED")
