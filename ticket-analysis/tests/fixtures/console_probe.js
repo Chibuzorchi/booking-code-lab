@@ -622,6 +622,39 @@ Object.assign(scenarios, {
             replaced, none, failed_run, refused};
   },
 
+  /* A failed or cancelled run whose saved codes cannot be listed keeps a visible
+     message and Retry -- across a provider switch -- and a retry shows the true count. */
+  async codes_recovery() {
+    const world = await start();
+    const summary = () => world.el('s1-summary').childNodes
+      .map(li => li.childNodes.map(cell => cell.textContent));
+    const state = () => ({error: world.el('s1-codes-error').textContent,
+                          retry_hidden: world.el('s1-codes-retry').hidden,
+                          codes_hidden: world.el('s1-codes').hidden});
+    await pick(world, 'RUN_C', 'failed');
+    answer(take(world, '/api/codes'), {error: {message: 'Checkpoint unreadable'}}, 500);
+    await settle();
+    const failed = state();
+    await switchTo(world, 'sportybet');
+    answer(take(world, '/api/runs'), {runs: []});
+    await settle();
+    const away = state();
+    await switchTo(world, 'bet9ja');
+    answer(take(world, '/api/runs'), {runs: []});
+    await settle();
+    const back = state();
+    const asks_before = world.pending.filter(c => c.url.includes('/api/codes')).length;
+    world.el('s1-codes-retry').fire('click');
+    await settle();
+    const asked = world.pending.filter(c => c.url.includes('/api/codes')).length - asks_before;
+    answer(take(world, '/api/codes'), {...codesReport('RUN_C'), partial: true, state: 'failed',
+      pool_size: 26, saved_count: 27, expired_codes: [ticket('OLD0001', 5)],
+      codes: [ticket('MID222', 400), ticket('LOW111', 9)]});
+    await settle();
+    return {failed, away, back, asked, recovered: state(), summary: summary(),
+            note: world.el('s1-count').textContent};
+  },
+
   async submission_switches() {
     const result = {};
     for (const timing of ['away', 'returned', 'failed']) {

@@ -262,6 +262,60 @@ class BrowserControlTests(unittest.TestCase):
         expect(self.page.locator('#s1-cards details')).to_have_count(25)
         self.assertEqual(self.requests, before)
 
+    def test_stage1_search_summary_and_copy_label_follow_the_matching_codes(self):
+        self.load_run()
+        expect(self.page.locator('#s1-cards details')).to_have_count(25)
+        summary = self.page.locator('#s1-summary')
+        for label in ('Saved in run', 'Eligible now', 'Started', 'Other exclusions', 'Showing'):
+            expect(summary).to_contain_text(label)
+        expect(self.page.locator('#s1-copy-all')).to_have_text('Copy all 26 matching codes')
+        first = self.page.locator('#s1-cards .ticket-code strong').first.inner_text()
+        before = list(self.requests)
+        self.page.locator('#s1-search').fill(first.lower())
+        expect(self.page.locator('#s1-count')).to_contain_text(f'code containing "{first.lower()}"')
+        matching = self.page.locator('#s1-cards details').count()
+        self.assertGreaterEqual(matching, 1)
+        expect(self.page.locator('#s1-copy-all')).to_have_text(
+            f'Copy all {matching} matching code' + ('' if matching == 1 else 's'))
+        self.page.locator('#s1-search').fill('no-such-code')
+        expect(self.page.locator('#s1-cards details')).to_have_count(0)
+        expect(self.page.locator('#s1-copy-all')).to_be_disabled()
+        self.page.locator('#s1-view-reset').click()
+        expect(self.page.locator('#s1-search')).to_have_value('')
+        expect(self.page.locator('#s1-copy-all')).to_have_text('Copy all 26 matching codes')
+        self.assertEqual(self.requests, before)
+
+    def test_copy_label_tracks_the_matching_count_after_a_copy_confirmation(self):
+        self.load_run()
+        expect(self.page.locator('#s1-cards details')).to_have_count(25)
+        copy = self.page.locator('#s1-copy-all')
+        copy.click()
+        expect(copy).to_have_text('Copied')
+        expect(copy).to_have_text('Copy all 26 matching codes', timeout=8000)
+        first = self.page.locator('#s1-cards .ticket-code strong').first.inner_text()
+        self.page.locator('#s1-search').fill(first)
+        matching = self.page.locator('#s1-cards details').count()
+        expect(copy).to_have_text(f'Copy all {matching} matching code' + ('' if matching == 1 else 's'))
+        self.assertNotIn('26', copy.inner_text())
+
+    def test_failed_code_list_can_be_retried_without_reloading_the_run(self):
+        self.errors['/api/codes'] = 'Cannot list saved codes'
+        self.load_run()
+        retry = self.page.locator('#s1-codes-retry')
+        expect(retry).to_be_visible()
+        del self.errors['/api/codes']
+        retry.click()
+        expect(self.page.locator('#s1-cards details')).to_have_count(25)
+        expect(retry).to_be_hidden()
+        expect(self.page.locator('#s1-codes-error')).to_be_hidden()
+
+    def test_ticket_details_are_a_labelled_group_for_their_code(self):
+        self.load_run()
+        card = self.page.locator('#s1-cards details').first
+        code = card.locator('.ticket-code strong').inner_text()
+        card.locator('summary').click()
+        expect(card.get_by_role('group', name=f'Selections for booking code {code}')).to_be_visible()
+
     def test_empty_controls_are_hidden_and_absent_from_keyboard_navigation(self):
         expect(self.page.locator('#s2-run')).to_be_disabled()
         expect(self.page.locator('#s3-run')).to_be_disabled()
