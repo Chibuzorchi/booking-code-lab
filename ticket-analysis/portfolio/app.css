@@ -92,3 +92,24 @@ a{color:#184b3e;text-underline-offset:3px}
 .runs-table details{max-width:220px}.runs-table code{display:block;overflow-wrap:anywhere;margin-top:10px}.runs-table summary{cursor:pointer}
 .current-run{background:#edf5ef}.run-choice{margin-top:20px;padding-top:16px;border-top:1px solid #dce4dc}
 .run-choice p{margin:0 0 12px}.runs-table:focus-visible{outline:3px solid #bb690c;outline-offset:3px}
+
+/* Scan configuration and lifecycle feedback. */
+#s1-fields{min-width:0}.scan-group{margin-top:24px;min-width:0}
+.scan-group legend{font-size:15px;font-weight:650;padding:0}
+.scan-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px;max-width:760px}
+.scan-grid input{width:100%;min-width:0}.seed-entry{max-width:360px;grid-template-columns:1fr}
+.seed-options{display:flex;flex-wrap:wrap;gap:12px;margin-top:12px}
+.seed-option{flex-direction:row;align-items:center;gap:10px;min-height:48px;padding:10px 14px;border:1px solid #7b8d80;border-radius:8px;cursor:pointer}
+.seed-option:has(input:checked){background:#edf5ef;border-color:#1c5344}
+.seed-option input{width:20px;height:20px;min-width:0;min-height:0;margin:0;accent-color:#1c5344}
+.scan-advanced>summary{min-height:44px;display:flex;align-items:center}
+.scan-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:20px}
+.scan-status{margin-top:28px;padding-top:20px;border-top:1px solid #dce4dc}.scan-status h3{margin:0}
+#s1-state{font-size:17px;font-weight:600;margin:12px 0 0;overflow-wrap:anywhere}
+#s1-counters li{background:none;border:0;padding:0 20px 0 0}
+#s1-diagnostics summary{min-height:44px;display:flex;align-items:center}
+#s1-diagnostic-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6}
+@media(max-width:600px){.scan-grid{grid-template-columns:1fr}.seed-option{width:100%}}
+
+.scan-advanced>summary::before,#s1-diagnostics>summary::before{content:'▸';margin-right:8px}
+.scan-advanced[open]>summary::before,#s1-diagnostics[open]>summary::before{content:'▾'}

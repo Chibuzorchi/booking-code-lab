@@ -292,13 +292,14 @@ function lock(stage, locked, note) {
 
 /* ---------- stage 1: harvest ---------- */
 
-/* The seed field and the fresh-seed box are one control: exactly one of them
-   supplies the seed, so ticking the box takes the text input out of play (a
+/* The seed-source radios select exactly one source. Fresh booking takes
+   the text input out of play (a
    disabled input is also skipped by form validation, which is why `required`
    can stay on it). */
 function seedHint() {
   const fresh = $('fresh_seed').checked;
   $('seed').disabled = fresh;
+  $('fresh-hint').hidden = !fresh;
   $('seed-hint').textContent = fresh
     ? 'booked for you when the run starts'
     : ($('provider').value === 'bet9ja' ? '7 characters, case kept' : '6 characters, upper-cased');
@@ -311,7 +312,7 @@ function seedHint() {
    view, so switching away and back shows the same list, not a reset one. */
 function blankPrefs() { return {order: 'asc', min: null, max: null, minLegs: null, maxLegs: null}; }
 function blankView() { return {run: null, codes: null, codesAsked: null, stage2: null, stage3: null, submission: null, showExpired: false,
-                               error: null, prefs: blankPrefs(), codesPrefs: blankPrefs(), codesPage: 0, page: 0}; }
+                               error: null, statusError: null, cancelling: null, prefs: blankPrefs(), codesPrefs: blankPrefs(), codesPage: 0, page: 0}; }
 
 /* Pagination is purely a slice of whatever `arrange()` already produced, so it
    never changes what counts as distinct or what a band/order selects -- only
@@ -339,6 +340,11 @@ function clearRun() {
   $('s1-state').textContent = 'No run yet.';
   $('s1-cancel').disabled = true;
   $('s1-run').disabled = false;
+  $('s1-refresh').hidden = true;
+  $('s1-diagnostics').hidden = true;
+  $('s1-diagnostic-text').textContent = '';
+  $('s1-guidance').textContent = 'Choose a seed source and set your limits to start.';
+  $('scan-form').setAttribute('aria-busy', 'false');
   fail('s1-error', '');
   lock('s2', true, 'Locked until a scan on this page has committed an extract.');
 }
@@ -371,11 +377,17 @@ function restore() {
   if (stage3) renderSelection(stage3);
   if (view.submission) {
     $('s1-state').textContent = 'Submitting scan…';
+    $('s1-guidance').textContent = 'Waiting for confirmation. Do not submit again.';
+    $('scan-form').setAttribute('aria-busy', 'true');
     $('s1-run').disabled = true;
     $('s1-cancel').disabled = true;
     lock('s2', true, 'Waiting for scan submission.');
   }
-  if (view.error) fail('s1-error', view.error);
+  if (view.error) {
+    fail('s1-error', view.error);
+    $('s1-state').textContent = 'Scan submission could not be confirmed.';
+    $('s1-guidance').textContent = 'Check Saved Runs before starting again: the server may have received your request.';
+  }
   runControls();
   renderContext();
 }
@@ -403,32 +415,70 @@ function seedText(status) {
   return ACTIVE.has(status.state) ? 'booking…' : 'never booked';
 }
 
+const STOP_NAMES = {try_budget: 'Attempt limit reached', qualifying_limit: 'Code limit reached',
+  candidates_exhausted: 'All candidate codes checked', cancelled: 'Cancelled by request',
+  failure: 'Stopped after an error', unknown: 'Stop reason unavailable'};
+
 function counterRows(status) {
   const c = status.counters || {};
-  return [['State', status.state], ['Seed', seedText(status)],
-          ['Tried', num(c.tried)], ['Valid', num(c.found_ok)],
-          ['Qualifying', num(c.qualifying)], ['Simulated out', num(c.excluded_simulations)],
-          ['Unpriced', num(c.unpriced)]];
+  return [['Seed', seedText(status)], ['Codes tried', num(c.tried)],
+          ['Valid codes', num(c.found_ok)], ['Qualifying found', num(c.qualifying)]];
+}
+
+function scanFeedback(status) {
+  const booking = (status.request || {}).fresh_seed && !status.seed && ACTIVE.has(status.state);
+  let title = STATE_NAMES[status.state] || 'Status unavailable';
+  let guidance = 'Inspect saved codes below or choose another run.';
+  if (view.cancelling || status.state === 'cancelled_unresolved') {
+    title = 'Cancelling scan…';
+    guidance = 'Waiting for the worker to stop. Another scan for this provider stays blocked until cancellation is confirmed.';
+  } else if (booking) {
+    title = 'Booking a fresh code';
+    guidance = 'The provider browser is booking your seed before scanning. You can cancel while waiting.';
+  } else if (ACTIVE.has(status.state)) {
+    title = status.state === 'starting' ? 'Starting scan…' : 'Scanning codes';
+    guidance = 'You can use other views while scanning continues. Found counts are not confirmed saved totals.';
+  } else if (status.state === 'succeeded') {
+    guidance = 'Saved codes are ready below. You can continue to Distinct Codes.';
+  } else if (status.state === 'cancelled') {
+    guidance = 'The scan stopped. Any checkpointed codes remain available below; this run cannot feed analysis.';
+  } else if (status.state === 'failed' || status.state === 'launch_failed') {
+    guidance = 'Review scan diagnostics for the cause. Any saved codes remain available below.';
+  } else if (status.state === 'unknown') {
+    guidance = 'Completion could not be confirmed. Refresh status or inspect Saved Runs before starting again.';
+  }
+  if (status.stop_reason && !ACTIVE.has(status.state)) title += ' — ' + (STOP_NAMES[status.stop_reason] || 'See scan diagnostics');
+  if (status.seed) title += ' · seed ' + status.seed;
+  $('s1-state').textContent = title;
+  $('s1-guidance').textContent = view.statusError
+    ? 'Status updates paused. Refresh status to reconnect; this does not start another scan. Last confirmed state is shown above.'
+    : guidance;
+  const c = status.counters || {};
+  $('s1-diagnostic-text').textContent = [
+    'Run: ' + status.run_id, 'Provider: ' + status.provider, 'State: ' + status.state,
+    'Stop reason: ' + (status.stop_reason || '—'),
+    'Simulations excluded: ' + num(c.excluded_simulations), 'Unpriced: ' + num(c.unpriced),
+    status.error ? 'Error: ' + (typeof status.error === 'object' ? JSON.stringify(status.error, null, 2) : status.error) : '',
+    status.recovery_note || '', view.statusError || '',
+  ].filter(Boolean).join('\n');
+  $('s1-diagnostics').hidden = false;
+  $('s1-refresh').hidden = false;
+  $('s1-refresh').disabled = pollGen === gen || Boolean(view.cancelling);
+  $('s1-refresh').textContent = pollGen === gen ? 'Refreshing…' : 'Refresh status';
+  $('s1-cancel').disabled = Boolean(view.cancelling) || !CANCELLABLE.has(status.state);
+  $('s1-run').disabled = Boolean(view.cancelling) || ACTIVE.has(status.state);
 }
 
 function showRun(status) {
   // A different run means the analysis on screen describes something else. Drop both
   // stages on any change of run id, whatever state the incoming run is in -- a run
   // that arrives already succeeded must not inherit the previous run's results.
-  if (!view.run || view.run.run_id !== status.run_id) { resetAnalysis(); resetResults(); }
+  if (!view.run || view.run.run_id !== status.run_id) { resetAnalysis(); resetResults(); view.statusError = null; }
+  if (view.cancelling && view.cancelling.run_id !== status.run_id) view.cancelling = null;
   view.run = status;
   resultsControls();
   facts('s1-counters', counterRows(status));
-  const parts = [`Run ${status.run_id} (${status.provider}) is ${status.state}`];
-  if (status.seed) parts.push(`seed ${status.seed}`);
-  else if ((status.request || {}).fresh_seed && ACTIVE.has(status.state))
-    parts.push('booking a fresh code in the browser');
-  if (status.stop_reason) parts.push(`stop reason: ${status.stop_reason}`);
-  if (status.error) parts.push(`error: ${status.error.message || status.error}`);
-  if (status.recovery_note) parts.push(status.recovery_note);
-  $('s1-state').textContent = parts.join(' · ') + '.';
-  $('s1-cancel').disabled = !CANCELLABLE.has(status.state);
-  $('s1-run').disabled = ACTIVE.has(status.state);
+  scanFeedback(status);
 
   const ready = status.state === 'succeeded';
   lock('s2', !ready, ready
@@ -452,21 +502,29 @@ function startPolling() {
    interval. pollGen records whose poll is out, so a stale one cannot clear the flag
    for the poll that replaced it. */
 async function tick() {
-  if (!view.run || pollGen === gen) return;
-  const mine = gen, run_id = view.run.run_id;
+  if (!view.run || view.cancelling || pollGen === gen) return;
+  const mine = gen, run_id = view.run.run_id, cancelRevision = view.cancelRevision;
   pollGen = mine;
+  scanFeedback(view.run);
   try {
     const status = await api('GET', '/api/scan/' + encodeURIComponent(run_id));
-    if (mine !== gen) return;
+    if (mine !== gen || view.cancelling || cancelRevision !== view.cancelRevision) return;
+    if (status.provider !== provider || status.run_id !== run_id) throw new Error('Status does not match the selected run.');
+    view.statusError = null;
+    fail('s1-error', '');
     showRun(status);
     loadCodes();
     if (!ACTIVE.has(status.state)) stopPolling();
   } catch (e) {
-    if (mine !== gen) return;
+    if (mine !== gen || view.cancelling || cancelRevision !== view.cancelRevision) return;
     stopPolling();
+    view.statusError = e.message;
     fail('s1-error', e.message);
   } finally {
-    if (pollGen === mine) pollGen = -1;
+    if (pollGen === mine) {
+      pollGen = -1;
+      if (mine === gen && view.run) scanFeedback(view.run);
+    }
   }
 }
 
@@ -487,7 +545,7 @@ function optionalInteger(id, name, minimum) {
 
 async function startScan(event) {
   event.preventDefault();
-  if (pendingRun || view.submission || (view.run && ACTIVE.has(view.run.state))) return;
+  if (pendingRun || view.submission || view.cancelling || (view.run && ACTIVE.has(view.run.state))) return;
   fail('s1-error', '');
   let body;
   try {
@@ -536,22 +594,43 @@ async function startScan(event) {
 }
 
 async function cancelScan() {
-  if (!view.run) return;
+  if (!view.run || view.cancelling || !CANCELLABLE.has(view.run.state)) return;
   fail('s1-error', '');
-  const mine = gen, run_id = view.run.run_id;
-  $('s1-cancel').disabled = true;
+  const owner = view, run_id = view.run.run_id, token = {run_id};
+  owner.cancelling = token;
+  owner.cancelRevision = (owner.cancelRevision || 0) + 1;
+  scanFeedback(view.run);
   try {
-    // Cancellation can still be pending, so keep polling rather than trusting the 200.
     const status = await api('POST', `/api/scan/${encodeURIComponent(run_id)}/cancel`, {});
-    if (mine !== gen || !view.run || view.run.run_id !== run_id) return;
-    showRun(status);
-    loadCodes();
-    if (ACTIVE.has(status.state)) startPolling();
+    if (!owner.run || owner.run.run_id !== run_id) return;
+    if (status.provider !== owner.run.provider || status.run_id !== run_id) throw new Error('Cancellation reply does not match the selected run.');
+    owner.run = status;
+    owner.statusError = null;
   } catch (e) {
-    if (mine !== gen) return;
-    fail('s1-error', e.message);
-    if (view.run) $('s1-cancel').disabled = !CANCELLABLE.has(view.run.state);
+    if (!owner.run || owner.run.run_id !== run_id) return;
+    owner.statusError = e.message;
+    if (view === owner) fail('s1-error', e.message);
+  } finally {
+    if (owner.cancelling === token) {
+      owner.cancelling = null;
+      owner.cancelRevision += 1;
+    }
+    if (view === owner && owner.run && owner.run.run_id === run_id) {
+      showRun(owner.run);
+      loadCodes();
+      if (ACTIVE.has(owner.run.state)) startPolling();
+    }
   }
+}
+
+async function refreshScanStatus() {
+  if (!view.run || view.submission || view.cancelling || pollGen === gen) return;
+  const owner = view, mine = gen;
+  await tick();
+  if (view !== owner || mine !== gen) return;
+  // Resume automatic updates only after a successful read. Never resubmit a job.
+  if (view.run && !view.statusError && ACTIVE.has(view.run.state) && poller === null)
+    poller = setInterval(tick, POLL_MS);
 }
 
 function runDate(status) {
@@ -1339,8 +1418,10 @@ async function decorrelate() {
 
 $('scan-form').addEventListener('submit', startScan);
 $('s1-cancel').addEventListener('click', cancelScan);
+$('s1-refresh').addEventListener('click', refreshScanStatus);
 $('provider').addEventListener('change', switchProvider);
 $('fresh_seed').addEventListener('change', seedHint);
+$('seed-typed').addEventListener('change', seedHint);
 $('runs-refresh').addEventListener('click', refreshRuns);
 for (const [id, event] of [['runs-search', 'input'], ['runs-status', 'change']]) $(id).addEventListener(event, () => { historyPage = 0; renderRuns(); });
 $('runs-reset').addEventListener('click', () => { $('runs-search').value = ''; $('runs-status').value = ''; historyPage = 0; renderRuns(); $('runs-search').focus(); });

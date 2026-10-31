@@ -184,10 +184,10 @@ class PageScriptTests(unittest.TestCase):
 
     def test_console_offers_a_fresh_code_instead_of_a_typed_seed(self):
         html = app_page()
-        self.assertIn('id="fresh_seed" type="checkbox"', html)
+        self.assertIn('id="fresh_seed" type="radio"', html)
         self.assertIn("$('seed').disabled = fresh;", html)
         self.assertIn("if ($('fresh_seed').checked) body.fresh_seed = true;", html)
-        self.assertIn('never stakes money', html)
+        self.assertIn('No money is staked.', html)
 
     def test_console_offers_an_order_and_band_over_the_distinct_list(self):
         html = app_page()
@@ -250,26 +250,27 @@ class ConsoleStateTests(unittest.TestCase):
 
     def test_a_late_stage_2_reply_cannot_become_another_run_s_analysis(self):
         after = self.seen['stale_stage2']
-        self.assertIn('RUN_B', after['state_line'])
+        self.assertIn('RUN_B', after['run_identity'])
         self.assertEqual(0, after['s2_cards'])      # run A's distinct codes are discarded
         self.assertTrue(after['s3_locked'])         # so stage 3 stays shut
 
     def test_a_late_poll_cannot_replace_the_run_on_screen(self):
         after = self.seen['stale_poll']
-        self.assertIn('RUN_B', after['state_line'])
-        self.assertNotIn('RUN_A', after['state_line'])
+        self.assertIn('RUN_B', after['run_identity'])
+        self.assertNotIn('RUN_A', after['run_identity'])
         self.assertFalse(after['polling'])          # B is terminal: A's poller is gone
 
     def test_a_late_selection_reply_is_not_rendered(self):
         after = self.seen['stale_stage3']
-        self.assertIn('RUN_B', after['state_line'])
+        self.assertIn('RUN_B', after['run_identity'])
         self.assertEqual(0, after['s3_cards'])
         self.assertTrue(after['s3_facts_hidden'])
 
     def test_a_late_cancellation_reply_cannot_resurrect_that_run(self):
         after = self.seen['stale_cancel']
-        self.assertIn('RUN_B', after['state_line'])
+        self.assertIn('RUN_B', after['run_identity'])
         self.assertNotIn('cancelled', after['state_line'])
+        self.assertFalse(after['run_disabled'])
 
     def test_only_one_poll_is_ever_in_flight(self):
         self.assertEqual(1, self.seen['no_overlapping_polls']['in_flight'])
@@ -283,7 +284,7 @@ class ConsoleStateTests(unittest.TestCase):
         self.assertEqual((0, 0), (away['s2_cards'], away['s3_cards']))
         self.assertTrue(away['s2_locked'] and away['s3_locked'])
         back = seen['back']                         # the run and both analyses come back
-        self.assertIn('RUN_A', back['state_line'])
+        self.assertIn('RUN_A', back['run_identity'])
         self.assertEqual((1, 1), (back['s2_cards'], back['s3_cards']))
         self.assertFalse(back['s2_locked'] or back['s3_locked'])
 
@@ -303,7 +304,7 @@ class ConsoleStateTests(unittest.TestCase):
         self.assertTrue(held['run_disabled'])
         self.assertTrue(seen['kept_asking'])        # it polled again, unprompted
         settled = seen['settled']
-        self.assertIn('is cancelled.', settled['state_line'])
+        self.assertEqual('Cancelled', settled['state_line'])
         self.assertFalse(settled['polling'])
         self.assertFalse(settled['run_disabled'])
 
@@ -311,7 +312,7 @@ class ConsoleStateTests(unittest.TestCase):
         seen = self.seen['immediate_success']
         self.assertEqual(1, seen['before']['s2_cards'])
         after = seen['after']
-        self.assertIn('RUN_B', after['state_line'])
+        self.assertIn('RUN_B', after['run_identity'])
         self.assertEqual(0, after['s2_cards'])
         self.assertTrue(after['s3_locked'])
 
@@ -334,7 +335,7 @@ class ConsoleStateTests(unittest.TestCase):
             with self.subTest(timing=timing):
                 case = self.seen['submission_switches'][timing]
                 self.assertTrue(case['otherEnabled'] and case['pendingLocked'] and case['noOtherPaint'])
-                self.assertIn('RUN_NEW', case['state_line'])
+                self.assertIn('RUN_NEW', case['run_identity'])
                 self.assertTrue(case['run_disabled'] and case['polling'])
 
     def test_fresh_seed_box_replaces_the_seed_field_and_reports_booking(self):
@@ -348,14 +349,14 @@ class ConsoleStateTests(unittest.TestCase):
         # The request says fresh_seed and carries no seed at all.
         self.assertEqual({'provider': 'bet9ja', 'fresh_seed': True}, seen['body'])
         # A null seed on a live run reads as "still booking", never as "no seed".
-        self.assertIn('booking a fresh code in the browser', seen['while_booking']['state_line'])
+        self.assertEqual('Booking a fresh code', seen['while_booking']['state_line'])
         self.assertEqual('booking…', seen['while_booking']['seed_row'])
         self.assertIn('seed BK9JA07', seen['booked']['state_line'])
         self.assertEqual('BK9JA07', seen['booked']['seed_row'])
         self.assertTrue(seen['booked']['polling'])       # booked, still scanning
         # A finished run that never got one says so, and shows the reason.
         self.assertEqual('never booked', seen['finished']['seed_row'])
-        self.assertIn('fresh-seed booking failed: no code', seen['finished']['state_line'])
+        self.assertIn('fresh-seed booking failed: no code', seen['finished']['diagnostics'])
         self.assertFalse(seen['finished']['polling'])
 
     def test_stage2_list_can_be_ordered_and_banded_without_re_analysing(self):
