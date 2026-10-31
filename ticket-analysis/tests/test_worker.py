@@ -59,6 +59,8 @@ def main() -> int:
     ap.add_argument("--scan", action="store_true")
     ap.add_argument("--min-odds", type=float, default=None)
     ap.add_argument("--max-odds-cap", type=float, default=None)
+    ap.add_argument("--min-legs", type=int, default=None)
+    ap.add_argument("--max-legs", type=int, default=None)
     ap.add_argument("--max-codes", type=int, default=None)
     ap.add_argument("--depth", type=int, default=None)
     ap.add_argument("--max-qualifying", type=int, default=None)
@@ -672,7 +674,7 @@ class FreshSeedArgvTests(WorkerTestBase):
         self.assertEqual(argv[3:], typed[4:])
         self.assertEqual(typed[:4], [sys.executable, "-m", "scripts.scan_code", "SEED"])
 
-    def test_legs_range_becomes_scanner_flags_and_zero_means_unset(self):
+    def test_legs_range_becomes_scanner_flags_and_zero_is_explicit(self):
         run_dir = self.workspace / "run"
         for fresh in (False, True):
             argv = scan_argv(sys.executable, None if fresh else "SEED", run_dir, max_qualifying=0,
@@ -680,7 +682,7 @@ class FreshSeedArgvTests(WorkerTestBase):
             self.assertEqual("3", argv[argv.index("--min-legs") + 1])
             self.assertEqual("5", argv[argv.index("--max-legs") + 1])
         argv = scan_argv(sys.executable, "SEED", run_dir, max_qualifying=0, min_legs=0, max_legs=None)
-        self.assertNotIn("--min-legs", argv)
+        self.assertEqual("0", argv[argv.index("--min-legs") + 1])
         self.assertNotIn("--max-legs", argv)
 
     def test_provider_without_book_and_scan_is_rejected(self):

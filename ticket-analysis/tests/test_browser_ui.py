@@ -116,6 +116,41 @@ class BrowserControlTests(unittest.TestCase):
         self.page.locator('#s3-run').click()
         expect(self.page.locator('#s3-cards details')).to_have_count(26)
 
+    def test_scan_form_sends_populated_blank_and_zero_leg_limits(self):
+        for low, high, expected in [('3', '5', {'min_legs': 3, 'max_legs': 5}),
+                                    ('', '', {}),
+                                    ('0', '0', {'min_legs': 0, 'max_legs': 0})]:
+            with self.subTest(low=low, high=high):
+                self.open_page()
+                self.errors['/api/scan'] = 'Fixture submission stopped'
+                self.page.locator('#seed').fill('ABC1234')
+                self.page.locator('#min_legs').fill(low)
+                self.page.locator('#max_legs').fill(high)
+                with self.page.expect_request(lambda r: r.method == 'POST' and r.url.endswith('/api/scan')) as sent:
+                    self.page.locator('#s1-run').click()
+                body = sent.value.post_data_json
+                self.assertEqual({k: body[k] for k in ('min_legs', 'max_legs') if k in body}, expected)
+                expect(self.page.locator('#s1-error')).to_contain_text('Fixture submission stopped')
+
+    def test_stage1_leg_filter_combines_with_odds_and_limits_copy(self):
+        self.load_run()
+        expect(self.page.locator('#s1-cards details')).to_have_count(25)
+        before = list(self.requests)
+        self.page.locator('#s1-min-legs').fill('1')
+        self.page.locator('#s1-max-legs').fill('1')
+        self.page.locator('#s1-min').fill('1')
+        expect(self.page.locator('#s1-count')).to_contain_text('odds from 1 up and 1 to 1 legs')
+        self.page.locator('#s1-copy-all').click()
+        self.assertEqual(len(self.page.evaluate('window.copied').splitlines()), 26)
+        self.page.locator('#s1-min-legs').fill('3')
+        expect(self.page.locator('#s1-cards details')).to_have_count(0)
+        expect(self.page.locator('#s1-copy-all')).to_be_disabled()
+        self.page.locator('#s1-view-reset').click()
+        expect(self.page.locator('#s1-min-legs')).to_have_value('')
+        expect(self.page.locator('#s1-max-legs')).to_have_value('')
+        expect(self.page.locator('#s1-cards details')).to_have_count(25)
+        self.assertEqual(self.requests, before)
+
     def test_empty_controls_are_hidden_and_absent_from_keyboard_navigation(self):
         expect(self.page.locator('#s2-run')).to_be_disabled()
         expect(self.page.locator('#s3-run')).to_be_disabled()
@@ -500,7 +535,7 @@ class BrowserControlTests(unittest.TestCase):
         self.errors['/api/scan/' + self.registry.run_id] = 'Run unavailable'
         self.requests.clear()
         self.page.locator('#runs-check-results').click()
-        expect(self.page.locator('#s1-error')).to_have_text('Run unavailable')
+        expect(self.page.locator('#s1-error')).to_have_text('Run unavailable (HTTP 503, fixture_error)')
         expect(self.page.locator('#page-title')).to_have_text('Saved Runs')
         expect(self.page.locator('#runs-check-results')).to_be_enabled()
         self.assertFalse(any(path.startswith('/api/results') for path, _ in self.requests))

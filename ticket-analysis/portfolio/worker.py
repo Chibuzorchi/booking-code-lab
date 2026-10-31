@@ -189,9 +189,9 @@ def scan_argv(python: str, seed: str | None, run_dir: Path, *, max_qualifying: i
         argv += ["--min-odds", str(min_odds)]
     if max_odds is not None:
         argv += ["--max-odds-cap", str(max_odds)]
-    if min_legs:
+    if min_legs is not None:
         argv += ["--min-legs", str(int(min_legs))]
-    if max_legs:
+    if max_legs is not None:
         argv += ["--max-legs", str(int(max_legs))]
     if max_codes is not None:
         argv += ["--max-codes", str(int(max_codes))]
